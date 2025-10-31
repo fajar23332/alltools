@@ -30,54 +30,43 @@ is_installed_bin(){
   return 1
 }
 
-# REPLACE get_version() in modules/utils.sh with this function
+# safe get_version
 get_version(){
   local bin="${1:-}"
-  if [[ -z "$bin" ]]; then
-    echo "unknown"
-    return 1
-  fi
-
-  local exe out
-  local TO=2   # seconds timeout, tweak to 3-4 on slow VPS
-
+  if [[ -z "$bin" ]]; then echo "unknown"; return 1; fi
+  local exe out TO=2
   exe="$(command -v "$bin" 2>/dev/null || echo "$bin")"
 
-  # Tools that reliably print useful output with -h (and may hang on --version)
+  # Special-case help-only tools
   case "$bin" in
-    httprobe|gobuster|waybackurls|subfinder|gospider)
+    httprobe|gobuster|waybackurls|whatweb)
       out="$(timeout ${TO}s "$exe" -h 2>/dev/null | head -n1 || true)"
-      if [[ -n "$out" ]]; then
-        echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-        return 0
-      fi
+      [[ -n "$out" ]] && { echo "$out"; return 0; }
       ;;
   esac
 
-  # 1) Prefer -h for everything (user requested)
-  out="$(timeout ${TO}s "$exe" -h 2>/dev/null | head -n1 || true)"
-  if [[ -n "$out" ]]; then
-    echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-    return 0
-  fi
-
-  # 2) Fallback to common version flags
-  for flag in "--version" "-v" "-V"; do
+  for flag in "--version" "-V" "-v" "version"; do
     out="$(timeout ${TO}s "$exe" "$flag" 2>/dev/null | head -n1 || true)"
-    if [[ -n "$out" ]]; then
-      echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-      return 0
-    fi
+    [[ -n "$out" ]] && { echo "$out" | tr -d '\r'; return 0; }
   done
 
-  # 3) Last resort: run without args (some CLIs print on plain run)
   out="$(timeout ${TO}s "$exe" 2>/dev/null | head -n1 || true)"
-  if [[ -n "$out" ]]; then
-    echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-    return 0
-  fi
+  [[ -n "$out" ]] && { echo "$out" | tr -d '\r'; return 0; }
 
   echo "unknown"
+  return 1
+}
+
+# relocate_binary helper used by setup-go parallel installer
+relocate_binary(){
+  local name="$1"
+  local gopath
+  gopath="$(go env GOPATH 2>/dev/null || echo "$HOME/go")"
+  if [ -x "$gopath/bin/$name" ]; then
+    run_sudo "mv -f '$gopath/bin/$name' /usr/local/bin/" || mv -f "$gopath/bin/$name" /usr/local/bin/ || true
+    run_sudo "chmod +x /usr/local/bin/$name" || chmod +x /usr/local/bin/$name || true
+    return 0
+  fi
   return 1
 }
 
