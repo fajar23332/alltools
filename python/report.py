@@ -4,33 +4,36 @@ from verify_tools import check_tools
 from datetime import datetime
 import subprocess, json, os, time
 
-def probe_tool(tool, to=2):
-    """Try multiple flags with timeout; return first non-empty line or 'unknown'."""
-    import subprocess
+def probe_tool(tool):
+    """Coba berbagai flag (dengan timeout) biar gak freeze."""
+    import subprocess, shlex
 
-    flags = ["--version", "-V", "-v", "-h"]
+    flags = ["--version", "-version", "-v", "-V", "version", "-h", "help"]
     for f in flags:
         try:
-            cmd = ["timeout", f"{to}s", tool, f]
+            # timeout 2 detik biar gak freeze
+            cmd = ["timeout", "2s", tool, f]
             out = subprocess.run(cmd, capture_output=True, text=True)
             txt = (out.stdout or out.stderr).strip()
             if txt:
-                # return only first line
-                return txt.splitlines()[0][:120]
+                return txt.splitlines()[0][:100]
         except Exception:
             continue
 
-    # fallback: plain run with timeout
+    # fallback: coba run 2 detik tanpa argumen
     try:
-        cmd = ["timeout", f"{to}s", tool]
+        cmd = ["timeout", "2s", tool]
         out = subprocess.run(cmd, capture_output=True, text=True)
         txt = (out.stdout or out.stderr).strip()
         if txt:
-            return txt.splitlines()[0][:120]
+            return txt.splitlines()[0][:100]
     except Exception:
         pass
 
     return "unknown"
+
+
+    
     # last resort: command -v
     return "installed (no probe output)"
 
