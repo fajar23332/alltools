@@ -3,8 +3,13 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# === Load utility functions first ===
-source modules/utils.sh
+# === Load utility functions (pastikan utils.sh sejajar dengan file ini) ===
+if [ -f "./utils.sh" ]; then
+  source "./utils.sh"
+else
+  echo "[ERROR] utils.sh not found! Pastikan file ini ada di folder yang sama dengan install.sh"
+  exit 1
+fi
 
 # --- User / Home handling (works when user ran script with sudo) ---
 REAL_USER="${SUDO_USER:-$USER}"
