@@ -6,7 +6,7 @@ import json
 import os
 
 def pretty_report(data: dict):
-    os.system("clear" if os.name == "posix" else "cls")
+    #os.system("clear" if os.name == "posix" else "cls")
     print("╔════════════════════════════════════╗")
     print("║        🧩  Tools Verification       ║")
     print("╚════════════════════════════════════╝\n")
