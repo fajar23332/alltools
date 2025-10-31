@@ -3,19 +3,6 @@
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 set -euo pipefail
 
-# --- User / Home handling (works when user ran script with sudo) ---
-REAL_USER="${SUDO_USER:-$USER}"
-REAL_HOME="$(eval echo "~${REAL_USER}")"
-# if running as root directly (no SUDO_USER), REAL_USER=root, REAL_HOME=/root
-if [ -z "$REAL_HOME" ] || [ "$REAL_HOME" = "~$REAL_USER" ]; then REAL_HOME="$HOME"; fi
-
-# Use real user's install_logs so pipx/go use sane path
-LOGDIR="${LOGDIR:-$REAL_HOME/alltools/install_logs}"
-mkdir -p "$LOGDIR"
-LOGFILE="${LOGFILE:-$LOGDIR/install_$(date +%Y%m%d_%H%M%S).log"}"
-
-echo_log "Running as: $(id -un)  (real user: $REAL_USER, real home: $REAL_HOME)"
-
 # === Logging Setup ===
 LOGDIR="${LOGDIR:-$SCRIPT_ROOT/install_logs}"
 mkdir -p "$LOGDIR"
@@ -43,8 +30,29 @@ is_installed_bin(){
 
 # === Fast get_version (non-blocking + safe mode) ===
 get_version(){
-  local bin="$1" exe out flag TO=2
+  local bin="$1"
+  local exe out
+  local TO=2  # seconds
+
   exe="$(command -v "$bin" 2>/dev/null || echo "$bin")"
+
+  for flag in "--version" "-v" "-V" "version" "-h" "--help"; do
+    out="$(timeout ${TO}s "$exe" "$flag" 2>/dev/null | head -n1 || true)"
+    if [ -n "$out" ]; then
+      echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+      return 0
+    fi
+  done
+
+  out="$(timeout ${TO}s "$exe" 2>/dev/null | head -n1 || true)"
+  if [ -n "$out" ]; then
+    echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    return 0
+  fi
+
+  echo "unknown"
+  return 1
+}
 
   # --- Special cases that hang with --version ---
   case "$bin" in
