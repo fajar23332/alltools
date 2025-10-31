@@ -30,22 +30,27 @@ is_installed_bin(){
 
 # === Fast get_version (non-blocking + safe mode) ===
 get_version(){
-  local bin="$1"
-  local exe out
-  local TO=2  # seconds
+  local bin="${1:-}"   # <-- tambahkan default kosong di sini
+  if [[ -z "$bin" ]]; then
+    echo "unknown"
+    return 1
+  fi
+
+  local exe out flag
+  local TO=2  # seconds timeout, tweak as needed
 
   exe="$(command -v "$bin" 2>/dev/null || echo "$bin")"
 
-  for flag in "--version" "-v" "-V" "version" "-h" "--help"; do
+  for flag in "--version" "-v" "-V" "version"; do
     out="$(timeout ${TO}s "$exe" "$flag" 2>/dev/null | head -n1 || true)"
-    if [ -n "$out" ]; then
+    if [[ -n "$out" ]]; then
       echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
       return 0
     fi
   done
 
   out="$(timeout ${TO}s "$exe" 2>/dev/null | head -n1 || true)"
-  if [ -n "$out" ]; then
+  if [[ -n "$out" ]]; then
     echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
     return 0
   fi
