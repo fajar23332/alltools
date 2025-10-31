@@ -28,4 +28,69 @@ install_snap_apps(){
   fi
 }
 
+# === 1️⃣ Install Naabu ===
+echo "[*] Installing Naabu (ProjectDiscovery)..."
+if ! command -v naabu >/dev/null 2>&1; then
+  tmpdir=$(mktemp -d)
+  cd "$tmpdir"
+  curl -sL "$(curl -s https://api.github.com/repos/projectdiscovery/naabu/releases/latest \
+    | grep browser_download_url | grep linux | grep amd64 | cut -d '"' -f 4 | head -n1)" \
+    -o naabu.zip
+  unzip -o naabu.zip
+  sudo mv naabu*/naabu /usr/local/bin/naabu 2>/dev/null || sudo mv naabu /usr/local/bin/naabu
+  sudo chmod +x /usr/local/bin/naabu
+  cd - >/dev/null
+  rm -rf "$tmpdir"
+  echo "[+] Naabu installed successfully ✅"
+else
+  echo "[=] Naabu already installed — skipping."
+fi
+
+# === 2️⃣ Install Trufflehog ===
+echo "[*] Installing Trufflehog (TruffleSecurity)..."
+if ! command -v trufflehog >/dev/null 2>&1; then
+  tmpdir=$(mktemp -d)
+  git clone --depth 1 https://github.com/trufflesecurity/trufflehog.git "$tmpdir/trufflehog"
+  cd "$tmpdir/trufflehog"
+
+  # versi baru: build langsung dari root
+  echo "[*] Building trufflehog binary..."
+  go build -o trufflehog . || {
+    echo "[!] Go build failed, trying go install fallback..."
+    go install . || { echo "[❌] Trufflehog build failed!"; exit 1; }
+  }
+
+  sudo mv trufflehog /usr/local/bin/
+  sudo chmod +x /usr/local/bin/trufflehog
+  cd - >/dev/null
+  rm -rf "$tmpdir"
+  echo "[+] Trufflehog installed successfully ✅"
+else
+  echo "[=] Trufflehog already installed — skipping."
+fi
+
+# === 3️⃣ Install Chaos-Client ===
+echo "[*] Installing Chaos-Client (ProjectDiscovery)..."
+if ! command -v chaos-client >/dev/null 2>&1; then
+  tmpdir=$(mktemp -d)
+  cd "$tmpdir"
+  curl -sL "$(curl -s https://api.github.com/repos/projectdiscovery/chaos-client/releases/latest \
+    | grep browser_download_url | grep linux | grep amd64 | cut -d '"' -f 4 | head -n1)" \
+    -o chaos.zip
+  unzip -o chaos.zip
+  sudo mv chaos*/chaos-client /usr/local/bin/chaos-client 2>/dev/null || sudo mv chaos-client /usr/local/bin/chaos-client
+  sudo chmod +x /usr/local/bin/chaos-client
+  cd - >/dev/null
+  rm -rf "$tmpdir"
+  echo "[+] Chaos-Client installed successfully ✅"
+else
+  echo "[=] Chaos-Client already installed — skipping."
+fi
+
+echo "=== All tools installed successfully ==="
+naabu -version || echo "naabu ready"
+trufflehog --version || echo "trufflehog ready"
+chaos-client -version || echo "chaos-client ready"
+
+
 install_snap_apps
