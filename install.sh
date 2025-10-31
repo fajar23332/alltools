@@ -21,7 +21,7 @@ source modules/setup-snap.sh
 # installs feroxbuster/amass if needed
 
 source modules/setup-go.sh
-install_or_update_go_tools
+install_go_tools
 
 source modules/setup-python.sh
 # pipx + sublist3r
