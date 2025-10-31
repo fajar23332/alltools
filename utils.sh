@@ -45,17 +45,7 @@ get_version(){
 
   exe="$(command -v "$bin" 2>/dev/null || echo "$bin")"
 
-  # Special cases: some tools print helpful info with -h (and hang on --version)
-  case "$bin" in
-    httprobe|gobuster)
-      out="$(timeout ${TO}s "$exe" -h 2>/dev/null | head -n1 || true)"
-      if [[ -n "$out" ]]; then
-        echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-        return 0
-      fi
-      ;;
-  esac
-
+ 
   # --- Special cases that hang with --version ---
 case "$bin" in
   httprobe|gobuster|waybackurls)
