@@ -7,7 +7,6 @@ source "$(dirname "$0")/utils.sh"
 declare -A GO_MAP=(
   ["github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"]="subfinder"
   ["github.com/tomnomnom/assetfinder@latest"]="assetfinder"
-  ["github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"]="naabu"
   ["github.com/projectdiscovery/dnsx/cmd/dnsx@latest"]="dnsx"
   ["github.com/projectdiscovery/httpx/cmd/httpx@latest"]="httpx"
   ["github.com/ffuf/ffuf@latest"]="ffuf"
@@ -20,9 +19,7 @@ declare -A GO_MAP=(
   ["github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest"]="shuffledns"
   ["github.com/bp0lr/gauplus@latest"]="gauplus"
   ["github.com/sensepost/gowitness@latest"]="gowitness"
-  ["github.com/trufflesecurity/trufflehog@latest"]="trufflehog"
   ["github.com/tomnomnom/httprobe@latest"]="httprobe"
-  ["github.com/projectdiscovery/chaos-client@latest"]="chaos-client"
 )
 
 ensure_go(){
