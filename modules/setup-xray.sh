@@ -13,7 +13,14 @@ fi
 
 install_xray_manual(){
   local ver="1.9.11"
-  local arch="amd64"
+  local arch="$(uname -m)"
+case "$arch" in
+  x86_64) arch="amd64" ;;
+  aarch64) arch="arm64" ;;
+  armv7l) arch="arm" ;;
+  i686|i386) arch="386" ;;
+  *) err_log "Unknown arch: $arch"; arch="amd64" ;;
+esac
   local tmp="$(mktemp -d)"
   cd "$tmp" || return 1
 
