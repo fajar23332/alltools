@@ -63,8 +63,42 @@ def check_tools(verbose: bool = False) -> dict:
 
 
 if __name__ == "__main__":
-    v = "--verbose" in sys.argv or "-v" in sys.argv
-    data = check_tools(verbose=v)
-    if not v:
-        # same behavior as original script: print dict
-        print(data)
+    import subprocess, time
+
+    print("[*] Running tool inventory check...")
+
+    data = check_tools()
+
+    # probe tiap tool (biar gak hang lama)
+    results = {}
+    for tool, ok in data.items():
+        if ok:
+            try:
+                # Timeout 2 detik per tool
+                cmd = f"timeout 2s {tool} --version || timeout 2s {tool} -h || echo 'unknown'"
+                out = subprocess.getoutput(cmd)
+                first_line = out.splitlines()[0] if out.strip() else "unknown"
+                results[tool] = f"installed; probe: {first_line}"
+            except Exception as e:
+                results[tool] = f"installed; probe failed: {e}"
+        else:
+            results[tool] = "missing"
+        time.sleep(0.1)
+
+    print()
+    for k, v in results.items():
+        status = "✔" if "installed" in v else "✖"
+        print(f"  {status} {k.ljust(14)} — {v.split('probe:')[1].strip() if 'probe:' in v else v}")
+
+    print("\n[*] Summary:")
+    installed = [t for t, v in results.items() if "installed" in v]
+    missing = [t for t, v in results.items() if "missing" in v]
+    print(f"  Installed: {len(installed)} / {len(results)}")
+    print(f"  Missing  : {', '.join(missing) if missing else 'None'}")
+
+    # Simpan hasil ke file JSON
+    import json
+    with open("install_report.json", "w") as f:
+        json.dump(results, f, indent=2)
+
+    print("[*] DONE. Report saved to install_report.json")
