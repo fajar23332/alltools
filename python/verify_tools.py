@@ -1,52 +1,67 @@
-#!/usr/bin/env python3
-import shutil, argparse
-
-TOOLS = [
- "subfinder","assetfinder","amass","gau","waybackurls","httpx",
- "naabu","dnsx","nuclei","ffuf","feroxbuster","gobuster","gospider",
- "httprobe","chaos-client","sqlmap","masscan","nmap","whatweb",
- "wpscan","eyewitness","trufflehog","subjack","sublister",
- "shuffledns","aquatone","dalfox","gowitness","xspear"
-]
-
-
-# paste this near the top of python/verify_tools.py (after imports)
 import subprocess
+import shutil
+import sys
+
+# safe probe with timeout and per-tool flags
+SPECIAL_FLAGS = {
+    # tools that choke on -V or --version; prefer -h or no-flag
+    "naabu": ["-h"],
+    "dnsx": ["-h"],
+    "nuclei": ["-h"],
+    "chaos-client": ["-h"],
+    "httpx": ["-h"],
+    "trufflehog": ["--help"],
+    "gobuster": ["-h"],
+    "ffuf": ["-h"],
+    "whatweb": ["-h"],
+    "feroxbuster": ["-h"],
+    "eyewitness": ["--help"],
+    "sublister": ["-h"],
+    # fallback: try -h first for many that show help safely
+}
 
 def probe_tool(tool: str, to: int = 2) -> str:
     """
-    Try probing a tool safely with a timeout to avoid hangs.
-    Returns a short one-line probe string or 'unknown'.
-    'to' is timeout in seconds.
+    Probe a tool safely with a Python-level timeout (seconds).
+    Returns a one-line string or 'unknown'.
     """
-    flags = ["--version", "-version", "-v", "-V", "version", "-h", "--help", "help"]
+    # if tool not in PATH quickly bail
+    path = shutil.which(tool)
+    if not path:
+        return "missing"
+
+    # candidate flags order
+    flags = []
+    if tool in SPECIAL_FLAGS:
+        flags.extend(SPECIAL_FLAGS[tool])
+    # then try common harmless flags
+    flags.extend(["-h", "--help", "--version", "-v", "-V"])
+    # finally try no flag
+    flags.append("")
+
     for f in flags:
         try:
-            # use timeout to avoid hanging tools
-            proc = subprocess.run(
-                ["timeout", f"{to}s", tool, f],
-                capture_output=True, text=True
-            )
+            cmd = [path] + ([f] if f else [])
+            # run with timeout; capture output; don't allow interactive input
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=to)
             out = (proc.stdout or proc.stderr or "").strip()
             if out:
-                return out.splitlines()[0][:200]
+                # return first non-empty line truncated
+                return out.splitlines()[0][:300]
+        except subprocess.TimeoutExpired:
+            # timeout — treat as unknown but continue trying other flags
+            continue
         except Exception:
+            # any other error (e.g. permission) -> continue
             continue
 
-    # fallback: try running tool alone for a short time
+    # final fallback: run with a very small timeout
     try:
-        proc = subprocess.run(["timeout", f"{to}s", tool], capture_output=True, text=True)
+        proc = subprocess.run([path], capture_output=True, text=True, timeout=1)
         out = (proc.stdout or proc.stderr or "").strip()
         if out:
-            return out.splitlines()[0][:200]
+            return out.splitlines()[0][:300]
     except Exception:
         pass
 
     return "unknown"
-
-def check_tools():
-    return {t: shutil.which(t) is not None for t in TOOLS}
-
-if __name__ == "__main__":
-    import json
-    print(json.dumps(check_tools(), indent=2))
