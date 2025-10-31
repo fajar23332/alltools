@@ -2,7 +2,7 @@
 # modules/setup-go.sh
 # Fokus: Install semua tools berbasis Go (tanpa Chromium/Chrome)
 set -euo pipefail
-source "$(dirname "$0")/utils.sh"
+source "$(dirname "$0")/../utils.sh"
 
 declare -A GO_MAP=(
   ["github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"]="subfinder"
@@ -22,13 +22,17 @@ declare -A GO_MAP=(
   ["github.com/tomnomnom/httprobe@latest"]="httprobe"
 )
 
-ensure_go(){
+# ✅ fungsi pastikan Go terinstal
+ensure_go() {
   if command -v go >/dev/null 2>&1; then
     echo_log "Go found: $(go version)"
   else
     echo_log "Installing Go..."
-    run_sudo "apt-get update -y && apt-get install -y golang-go" >>"$LOGFILE" 2>&1 || err_log "install go failed"
+    run_sudo "apt-get update -y && apt-get install -y golang-go" >>"$LOGFILE" 2>&1 \
+      || err_log "install go failed"
   fi
+}  # <<<< TUTUPNYA DI SINI, tadinya hilang
+
 # --- improved: parallel go installs with logs + relocate ---
 install_go_tools_all() {
   ensure_go
@@ -40,7 +44,7 @@ install_go_tools_all() {
   echo_log "Using $WORKERS parallel workers for 'go install'"
 
   tmp_list="$(mktemp)"
-  printf "%s\n" "${GO_PACKAGES[@]}" > "$tmp_list"
+  printf "%s\n" "${!GO_MAP[@]}" > "$tmp_list"
 
   if ! command -v xargs >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
     err_log "xargs or timeout missing — please install coreutils or util-linux"
@@ -72,9 +76,9 @@ install_go_tools_all() {
     status="${line#*:}"
     if [ "$status" = "OK" ]; then
       if [ -x "$gpath/bin/$name" ]; then
-        run_sudo "mv -f '$gpath/bin/$name' '$FINAL_BIN_DIR/'" 2>/dev/null || mv -f "$gpath/bin/$name" "$FINAL_BIN_DIR/" || true
-        run_sudo "chmod +x '$FINAL_BIN_DIR/$name'" 2>/dev/null || chmod +x "$FINAL_BIN_DIR/$name" || true
-        echo_log "[+] Installed $name -> $FINAL_BIN_DIR/$name"
+        run_sudo "mv -f '$gpath/bin/$name' /usr/local/bin/" >/dev/null 2>&1 || mv -f "$gpath/bin/$name" /usr/local/bin/ || true
+        run_sudo "chmod +x '/usr/local/bin/$name'" >/dev/null 2>&1 || chmod +x "/usr/local/bin/$name" || true
+        echo_log "[+] Installed $name -> /usr/local/bin/$name"
       else
         relocate_binary "$name" || true
       fi
@@ -90,7 +94,7 @@ install_go_tools_all() {
 }
 
 # 🔹 Aquatone manual installer (no Chrome)
-install_aquatone_no_browser(){
+install_aquatone_no_browser() {
   local bin=aquatone
   if command -v "$bin" >/dev/null 2>&1; then
     echo_log "[=] aquatone already installed"
@@ -101,8 +105,10 @@ install_aquatone_no_browser(){
   tmp="$(mktemp -d)"
   local ver="1.7.0"
   local zipurl="https://github.com/michenriksen/aquatone/releases/download/v${ver}/aquatone_linux_amd64_${ver}.zip"
-  curl -sL -o "$tmp/aquatone.zip" "$zipurl" >>"$LOGFILE" 2>&1 || { err_log "aquatone download failed"; rm -rf "$tmp"; return; }
-  unzip -o "$tmp/aquatone.zip" -d "$tmp" >>"$LOGFILE" 2>&1 || { err_log "aquatone unzip failed"; rm -rf "$tmp"; return; }
+  curl -sL -o "$tmp/aquatone.zip" "$zipurl" >>"$LOGFILE" 2>&1 \
+    || { err_log "aquatone download failed"; rm -rf "$tmp"; return; }
+  unzip -o "$tmp/aquatone.zip" -d "$tmp" >>"$LOGFILE" 2>&1 \
+    || { err_log "aquatone unzip failed"; rm -rf "$tmp"; return; }
 
   if [ -f "$tmp/aquatone" ]; then
     chmod +x "$tmp/aquatone"
@@ -114,6 +120,6 @@ install_aquatone_no_browser(){
   rm -rf "$tmp"
 }
 
-# Jalankan semua bagian
-install_go_tools
+# 🔸 Jalankan semua bagian
+install_go_tools_all
 install_aquatone_no_browser
