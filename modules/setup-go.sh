@@ -29,29 +29,64 @@ ensure_go(){
     echo_log "Installing Go..."
     run_sudo "apt-get update -y && apt-get install -y golang-go" >>"$LOGFILE" 2>&1 || err_log "install go failed"
   fi
-}
-
-install_go_tools(){
+# --- improved: parallel go installs with logs + relocate ---
+install_go_tools_all() {
   ensure_go
-  for pkg in "${!GO_MAP[@]}"; do
-    bin="${GO_MAP[$pkg]}"
-    if is_installed_bin "$bin"; then
-      echo_log "Updating Go tool: $bin"
-    else
-      echo_log "Installing Go tool: $bin"
-    fi
+  gpath="$(go env GOPATH 2>/dev/null || echo "$HOME/go")"
+  mkdir -p "$gpath/bin"
+  echo_log "GOPATH: $gpath; installing go packages (parallel)..."
 
-    if timeout 600s bash -c "GO111MODULE=on go install $pkg" >>"$LOGFILE" 2>&1; then
-      gopath="$(go env GOPATH 2>/dev/null || echo "$HOME/go")"
-      if [ -x "$gopath/bin/$bin" ]; then
-        run_sudo "mv -f '$gopath/bin/$bin' /usr/local/bin/" || mv -f "$gopath/bin/$bin" /usr/local/bin/
-        run_sudo "chmod +x /usr/local/bin/$bin" || chmod +x /usr/local/bin/$bin
-      fi
-      echo_log "[+] Installed/Updated $bin successfully"
+  WORKERS="$(nproc 2>/dev/null || echo 4)"
+  echo_log "Using $WORKERS parallel workers for 'go install'"
+
+  tmp_list="$(mktemp)"
+  printf "%s\n" "${GO_PACKAGES[@]}" > "$tmp_list"
+
+  if ! command -v xargs >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
+    err_log "xargs or timeout missing — please install coreutils or util-linux"
+    FAILED+=("go-parallel-prereq")
+    rm -f "$tmp_list"
+    return 1
+  fi
+
+  results="$LOGDIR/go_parallel_results_$(date +%s).txt"
+  printf "%s\n" "" > "$results"
+
+  xargs -a "$tmp_list" -n1 -P"$WORKERS" -I{} bash -c '
+    pkg="{}"
+    name="$(basename "${pkg%@*}")"
+    logf="'"$LOGDIR"'/go_install_${name//\//_}.log"
+    echo "[`date +%H:%M:%S`] Installing $pkg ..." >>"$logf"
+    if timeout 900s bash -c "GO111MODULE=on go install $pkg" >>"$logf" 2>&1; then
+      echo "$name:OK"
     else
-      err_log "❌ Failed installing $bin"
+      echo "$name:FAIL"
     fi
-  done
+  ' > "$results.tmp" 2>&1 || true
+
+  mv -f "$results.tmp" "$results" 2>/dev/null || true
+  rm -f "$tmp_list"
+
+  while read -r line || [ -n "$line" ]; do
+    name="${line%%:*}"
+    status="${line#*:}"
+    if [ "$status" = "OK" ]; then
+      if [ -x "$gpath/bin/$name" ]; then
+        run_sudo "mv -f '$gpath/bin/$name' '$FINAL_BIN_DIR/'" 2>/dev/null || mv -f "$gpath/bin/$name" "$FINAL_BIN_DIR/" || true
+        run_sudo "chmod +x '$FINAL_BIN_DIR/$name'" 2>/dev/null || chmod +x "$FINAL_BIN_DIR/$name" || true
+        echo_log "[+] Installed $name -> $FINAL_BIN_DIR/$name"
+      else
+        relocate_binary "$name" || true
+      fi
+      SUCCESS+=("$name")
+    else
+      err_log "FAILED: $name"
+      FAILED+=("$name")
+    fi
+  done < "$results"
+
+  echo_log "Parallel go install done. Successes: ${#SUCCESS[@]}, Failed: ${#FAILED[@]}"
+  return 0
 }
 
 # 🔹 Aquatone manual installer (no Chrome)
