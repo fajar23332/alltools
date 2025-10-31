@@ -1,34 +1,33 @@
 #!/usr/bin/env python3
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from verify-tools import check_tools
+# python/report.py — pretty report using verify_tools.check_tools()
 
-console = Console()
+from verify_tools import check_tools   # pastikan nama file verify_tools.py
+import json
+from datetime import datetime
 
-def main():
-    console.print(Panel.fit("⚡ [bold cyan]Dolvin Tool Checker[/bold cyan] ⚡", style="bold blue"))
-    
-    results = check_tools()
-    total = len(results)
-    installed = sum(1 for v in results.values() if v)
-
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("Tool", style="cyan", width=22)
-    table.add_column("Status", style="green", justify="center")
-
-    for tool, ok in results.items():
-        status = "[bold green]✅ Installed[/bold green]" if ok else "[bold red]❌ Missing[/bold red]"
-        table.add_row(tool, status)
-
-    console.print(table)
-    console.print(f"\n[bold yellow]Summary:[/bold yellow] [green]{installed}[/green]/[white]{total}[/white] tools installed")
-
-    if installed == total:
-        console.print("\n[bold green]🔥 All tools installed! Fullpower mode unlocked![/bold green]")
-    else:
-        missing = [t for t, ok in results.items() if not ok]
-        console.print(f"\n[bold red]⚠ Missing Tools:[/bold red] {', '.join(missing)}")
+def pretty_report(data: dict):
+    print()
+    print("=== Tools Report ===")
+    print(f"Generated: {datetime.now().isoformat(sep=' ', timespec='seconds')}")
+    ok = [k for k,v in data.items() if v]
+    missing = [k for k,v in data.items() if not v]
+    print(f"Found  : {len(ok)}")
+    print(f"Missing: {len(missing)}")
+    print()
+    print("✅ Installed:")
+    for n in sorted(ok):
+        print(f"  - {n}")
+    print()
+    if missing:
+        print("❌ Missing:")
+        for n in sorted(missing):
+            print(f"  - {n}")
+    print()
+    # also write JSON summary
+    with open("install_report.json", "w") as fh:
+        json.dump({"generated": datetime.now().isoformat(), "ok": ok, "missing": missing}, fh, indent=2)
+    print("Wrote summary -> install_report.json")
 
 if __name__ == "__main__":
-    main()
+    data = check_tools()   # fungsi verify_tools harus mengembalikan dict like {name: bool}
+    pretty_report(data)
