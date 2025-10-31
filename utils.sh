@@ -3,6 +3,19 @@
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 set -euo pipefail
 
+# --- User / Home handling (works when user ran script with sudo) ---
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_HOME="$(eval echo "~${REAL_USER}")"
+# if running as root directly (no SUDO_USER), REAL_USER=root, REAL_HOME=/root
+if [ -z "$REAL_HOME" ] || [ "$REAL_HOME" = "~$REAL_USER" ]; then REAL_HOME="$HOME"; fi
+
+# Use real user's install_logs so pipx/go use sane path
+LOGDIR="${LOGDIR:-$REAL_HOME/alltools/install_logs}"
+mkdir -p "$LOGDIR"
+LOGFILE="${LOGFILE:-$LOGDIR/install_$(date +%Y%m%d_%H%M%S).log"}"
+
+echo_log "Running as: $(id -un)  (real user: $REAL_USER, real home: $REAL_HOME)"
+
 # === Logging Setup ===
 LOGDIR="${LOGDIR:-$SCRIPT_ROOT/install_logs}"
 mkdir -p "$LOGDIR"
