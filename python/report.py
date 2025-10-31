@@ -5,7 +5,9 @@ from datetime import datetime
 import subprocess, json, os, time
 
 def probe_tool(tool, to=2):
-    """Try --version, -V, -v, -h with timeout; return first non-empty line or 'unknown'."""
+    """Try multiple flags with timeout; return first non-empty line or 'unknown'."""
+    import subprocess
+
     flags = ["--version", "-V", "-v", "-h"]
     for f in flags:
         try:
@@ -13,9 +15,22 @@ def probe_tool(tool, to=2):
             out = subprocess.run(cmd, capture_output=True, text=True)
             txt = (out.stdout or out.stderr).strip()
             if txt:
-                return txt.splitlines()[0]
+                # return only first line
+                return txt.splitlines()[0][:120]
         except Exception:
-            pass
+            continue
+
+    # fallback: plain run with timeout
+    try:
+        cmd = ["timeout", f"{to}s", tool]
+        out = subprocess.run(cmd, capture_output=True, text=True)
+        txt = (out.stdout or out.stderr).strip()
+        if txt:
+            return txt.splitlines()[0][:120]
+    except Exception:
+        pass
+
+    return "unknown"
     # last resort: command -v
     return "installed (no probe output)"
 
