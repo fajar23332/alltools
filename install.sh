@@ -3,6 +3,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# === Load utility functions first ===
+source modules/utils.sh
+
 # --- User / Home handling (works when user ran script with sudo) ---
 REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME="$(eval echo "~${REAL_USER}")"
@@ -20,13 +23,10 @@ export LOGDIR="$(pwd)/install_logs"
 mkdir -p "$LOGDIR"
 export LOGFILE="$LOGDIR/install_$(date +%Y%m%d_%H%M%S).log"
 
-# source utils (PASTIKAN ini menunjuk ke folder modules)
-source utils.sh
-
 echo_log "Start master installer (one command). Logs -> $LOGFILE"
 echo_log "Running modules..."
 
-# run modules (each module logs to LOGFILE via utils)
+# --- Jalankan setiap modul utama ---
 source modules/setup-apt.sh
 install_or_upgrade_apt
 
