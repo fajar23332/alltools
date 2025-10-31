@@ -56,6 +56,14 @@ get_version(){
       ;;
   esac
 
+  # --- Special cases that hang with --version ---
+case "$bin" in
+  httprobe|gobuster|waybackurls)
+    out="$(timeout ${TO}s "$exe" -h 2>/dev/null | head -n1 || true)"
+    [[ -n "$out" ]] && { echo "$out"; return 0; }
+    ;;
+esac
+
   # Try common version flags (avoid blocking)
   for flag in "--version" "-v" "-V" "version"; do
     out="$(timeout ${TO}s "$exe" "$flag" 2>/dev/null | head -n1 || true)"
