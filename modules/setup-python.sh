@@ -258,18 +258,42 @@ install_or_update_pipx
 install_sublist3r
 
 # Tambahan tools baru (eksekusi hanya kalau perlu)
-# NOTE: kalau mau nundain satu per satu, kasih flag atau comment sesuai instruksi lo
 install_xspear          # Ruby-based XSS scanner (ganti xssfinder)
 install_eyewitness      # Screenshot & recon visualizer (Python)
-# Tambahan tools baru (eksekusi hanya kalau perlu)
-install_xspear
-install_eyewitness
+install_goth_example    # Optional: OAuth example builder
 
-# Goth optional: set INSTALL_GOTH=1 sebelum panggil install.sh kalau mau
-if [ "${INSTALL_GOTH:-0}" = "1" ]; then
-  install_goth_example
-else
-  echo_log "Skipping goth example. Set INSTALL_GOTH=1 to enable."
+# === Auto-Fix PATH & Symlink ===
+
+# [Fix XSpear PATH]
+if command -v ruby >/dev/null 2>&1; then
+  GEM_BIN_PATH="$(ruby -e 'puts Gem.bindir' 2>/dev/null || true)"
+  if [ -n "$GEM_BIN_PATH" ] && [ -d "$GEM_BIN_PATH" ]; then
+    if ! grep -q "$GEM_BIN_PATH" <<<"$PATH"; then
+      echo_log "[+] Adding Ruby gem bin path to PATH: $GEM_BIN_PATH"
+      echo "export PATH=\"\$PATH:$GEM_BIN_PATH\"" >> "$REAL_HOME/.bashrc"
+      export PATH="$PATH:$GEM_BIN_PATH"
+    fi
+  fi
+fi
+
+# [Fix EyeWitness symlink]
+EYE_BASE="$REAL_HOME/EyeWitness"
+if [ -d "$EYE_BASE" ]; then
+  if [ -f "$EYE_BASE/Python/EyeWitness.py" ]; then
+    EYE_MAIN="$EYE_BASE/Python/EyeWitness.py"
+  elif [ -f "$EYE_BASE/EyeWitness.py" ]; then
+    EYE_MAIN="$EYE_BASE/EyeWitness.py"
+  else
+    EYE_MAIN=""
+  fi
+
+  if [ -n "$EYE_MAIN" ]; then
+    echo_log "[+] Linking EyeWitness main script: $EYE_MAIN"
+    run_sudo "ln -sf '$EYE_MAIN' /usr/local/bin/eyewitness" || ln -sf "$EYE_MAIN" "$REAL_HOME/.local/bin/eyewitness"
+    chmod +x "$EYE_MAIN" || true
+  else
+    err_log "[!] EyeWitness main script not found, manual check needed."
+  fi
 fi
 
 echo_log "modules/setup-python.sh finished."
