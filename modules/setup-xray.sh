@@ -14,16 +14,33 @@ fi
 install_xray_manual(){
   local ver="1.9.11"
   local arch="amd64"
-  local tmp
-  tmp="$(mktemp -d)"
+  local tmp="$(mktemp -d)"
   cd "$tmp" || return 1
 
-  echo_log "[*] Downloading Xray v$ver ($arch)..."
-  local url="https://github.com/chaitin/xray/releases/download/v${ver}/xray_linux_${arch}.zip"
-  if ! curl -fsSL -o xray.zip "$url"; then
-    err_log "❌ Failed to download $url"
-    rm -rf "$tmp"
+  echo_log "[*] Detecting downloader..."
+  local dl_cmd=""
+  if command -v curl >/dev/null 2>&1; then
+    dl_cmd="curl -fsSL -o"
+  elif command -v wget >/dev/null 2>&1; then
+    dl_cmd="wget -qO"
+  else
+    err_log "❌ Neither curl nor wget found. Please install one of them."
     return 1
+  fi
+
+  # === FLEXIBLE URL HANDLER ===
+  local base="https://github.com/chaitin/xray/releases/download"
+  local url1="$base/${ver}/xray_linux_${arch}.zip"
+  local url2="$base/v${ver}/xray_linux_${arch}.zip"
+
+  echo_log "[*] Downloading Xray (trying $url1 first)..."
+  if ! eval "$dl_cmd xray.zip \"$url1\"" 2>/dev/null; then
+    echo_log "[!] First URL failed, trying alternate tag format (with 'v')..."
+    if ! eval "$dl_cmd xray.zip \"$url2\"" 2>/dev/null; then
+      err_log "❌ Both URLs failed to download (checked $url1 and $url2)"
+      rm -rf "$tmp"
+      return 1
+    fi
   fi
 
   echo_log "[*] Extracting Xray..."
