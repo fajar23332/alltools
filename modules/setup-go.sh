@@ -2,7 +2,7 @@
 # modules/setup-go.sh
 # Fokus: Install semua tools berbasis Go (tanpa Chromium/Chrome)
 set -euo pipefail
-source "$(dirname "$0")/../utils.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../utils.sh"
 
 declare -A GO_MAP=(
   ["github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"]="subfinder"
