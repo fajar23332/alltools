@@ -30,9 +30,7 @@ is_installed_bin(){
   return 1
 }
 
-# === Fast get_version (non-blocking + safe mode) ===
-# Usage: get_version <binary-name>
-# Returns first non-empty line of version output, or "unknown"
+# ---------- Replace get_version() in modules/utils.sh ----------
 get_version(){
   local bin="${1:-}"
   if [[ -z "$bin" ]]; then
@@ -40,12 +38,38 @@ get_version(){
     return 1
   fi
 
-  local exe out flag
-  local TO=2  # seconds timeout, tweak if needed
+  local exe out
+  local TO=2   # seconds timeout, tweak if needed
 
   exe="$(command -v "$bin" 2>/dev/null || echo "$bin")"
 
- 
+  # 1) Prefer -h (user request) — many tools print help reliably
+  out="$(timeout ${TO}s "$exe" -h 2>/dev/null | head -n1 || true)"
+  if [[ -n "$out" ]]; then
+    echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    return 0
+  fi
+
+  # 2) Then try common version flags as fallback
+  for flag in "--version" "-v" "-V"; do
+    out="$(timeout ${TO}s "$exe" "$flag" 2>/dev/null | head -n1 || true)"
+    if [[ -n "$out" ]]; then
+      echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+      return 0
+    fi
+  done
+
+  # 3) Some binaries print useful info without flags
+  out="$(timeout ${TO}s "$exe" 2>/dev/null | head -n1 || true)"
+  if [[ -n "$out" ]]; then
+    echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+    return 0
+  fi
+
+  echo "unknown"
+  return 1
+}
+# ---------- end get_version() ----------
   # --- Special cases that hang with --version ---
 case "$bin" in
   httprobe|gobuster|waybackurls)
