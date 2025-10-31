@@ -97,7 +97,14 @@ if ! command -v trufflehog >/dev/null 2>&1; then
   tmpdir=$(mktemp -d)
   git clone --depth 1 https://github.com/trufflesecurity/trufflehog.git "$tmpdir/trufflehog"
   cd "$tmpdir/trufflehog"
-  go build -o trufflehog ./cmd/trufflehog || go install ./cmd/trufflehog
+
+  # versi baru: build langsung dari root
+  echo "[*] Building trufflehog binary..."
+  go build -o trufflehog . || {
+    echo "[!] Go build failed, trying go install fallback..."
+    go install . || { echo "[❌] Trufflehog build failed!"; exit 1; }
+  }
+
   sudo mv trufflehog /usr/local/bin/
   sudo chmod +x /usr/local/bin/trufflehog
   cd - >/dev/null
