@@ -12,7 +12,7 @@ if [ -z "$REAL_HOME" ] || [ "$REAL_HOME" = "~$REAL_USER" ]; then REAL_HOME="$HOM
 # Use real user's install_logs so pipx/go use sane path
 LOGDIR="${LOGDIR:-$REAL_HOME/alltools/install_logs}"
 mkdir -p "$LOGDIR"
-LOGFILE="${LOGFILE:-$LOGDIR/install_$(date +%Y%m%d_%H%M%S).log"}"
+LOGFILE="${LOGFILE:-$LOGDIR/install_$(date +%Y%m%d_%H%M%S).log}"
 
 echo_log "Running as: $(id -un)  (real user: $REAL_USER, real home: $REAL_HOME)"
 
