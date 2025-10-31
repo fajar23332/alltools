@@ -136,25 +136,35 @@ install_sublist3r(){
 # === Install XSpear (Ruby gem) ===
 install_xspear(){
   echo_log "[*] Installing XSpear (gem)..."
-  # ensure ruby/gem present
   if ! command -v gem >/dev/null 2>&1; then
     echo_log "ruby/gem not found -> installing ruby"
-    run_sudo "apt-get update -y && apt-get install -y ruby-full build-essential" >>"$LOGFILE" 2>&1 || { err_log "install ruby failed"; return 1; }
+    run_sudo "apt-get update -y && apt-get install -y ruby-full build-essential" >>"$LOGFILE" 2>&1 || { err_log "install ruby failed"; FAILED+=("xspear"); return 1; }
   fi
 
-  # install main gem + common dependency gems
   run_sudo "gem install XSpear --no-document" >>"$LOGFILE" 2>&1 || { err_log "gem install XSpear failed"; FAILED+=("xspear"); return 1; }
   run_sudo "gem install colorize selenium-webdriver terminal-table progress_bar --no-document" >>"$LOGFILE" 2>&1 || true
+
+  # locate user gem bin dir and ensure PATH
+  GEM_BIN_DIR="$(ruby -e 'print Gem.user_dir')/bin" || GEM_BIN_DIR=""
+  if [ -n "$GEM_BIN_DIR" ] && [ -d "$GEM_BIN_DIR" ]; then
+    if ! echo "$PATH" | grep -q "$GEM_BIN_DIR"; then
+      export PATH="$GEM_BIN_DIR:$PATH"
+      # persist for real user
+      if [ -n "$REAL_HOME" ] && [ -w "$REAL_HOME/.bashrc" ]; then
+        echo "export PATH=\"$GEM_BIN_DIR:\$PATH\"" >> "$REAL_HOME/.bashrc"
+      fi
+      echo_log "Added gem bin to PATH: $GEM_BIN_DIR"
+    fi
+  fi
 
   if command -v xspear >/dev/null 2>&1; then
     echo_log "[+] XSpear installed -> $(command -v xspear)"
     SUCCESS+=("xspear")
   else
-    echo_log "[!] XSpear gem installed but 'xspear' not in PATH. You may need to add $(ruby -e 'print Gem.user_dir')/bin to PATH"
+    echo_log "[!] XSpear gem installed but 'xspear' not in PATH. Check $GEM_BIN_DIR"
     FAILED+=("xspear")
   fi
 }
-
 # === Install EyeWitness ===
 install_eyewitness(){
   echo_log "[*] Installing EyeWitness..."
@@ -164,28 +174,51 @@ install_eyewitness(){
   fi
 
   tmp="$(mktemp -d)"
-  git clone --depth 1 https://github.com/FortyNorthSecurity/EyeWitness.git "$tmp/EyeWitness" >>"$LOGFILE" 2>&1 || { err_log "git clone eyewitness failed"; rm -rf "$tmp"; return 1; }
-  # run setup script inside repo
+  trap 'rm -rf "$tmp"' EXIT
+
+  git clone --depth 1 https://github.com/FortyNorthSecurity/EyeWitness.git "$tmp/EyeWitness" >>"$LOGFILE" 2>&1 || { err_log "git clone eyewitness failed"; rm -rf "$tmp"; trap - EXIT; return 1; }
+
   if [ -d "$tmp/EyeWitness/setup" ]; then
-    cd "$tmp/EyeWitness/setup" || { err_log "cd eyewitness setup failed"; rm -rf "$tmp"; return 1; }
-    run_sudo "./setup.sh" >>"$LOGFILE" 2>&1 || { err_log "eyewitness setup.sh failed (try manual)"; }
+    cd "$tmp/EyeWitness/setup" || { err_log "cd eyewitness setup failed"; rm -rf "$tmp"; trap - EXIT; return 1; }
+    run_sudo "./setup.sh" >>"$LOGFILE" 2>&1 || echo_log "eyewitness setup.sh had issues; continue and try manual"
     cd "$tmp" || true
   else
-    err_log "eyewitness setup folder missing"
+    err_log "eyewitness setup folder missing; continuing with manual placement"
   fi
 
+  # move to real home and symlink to actual script location (Python/)
   if run_sudo true 2>/dev/null; then
     run_sudo "mv -f '$tmp/EyeWitness' '$REAL_HOME/EyeWitness'" || mv -f "$tmp/EyeWitness" "$REAL_HOME/EyeWitness"
     run_sudo "chown -R $REAL_USER:$REAL_USER '$REAL_HOME/EyeWitness'" || true
-    run_sudo "ln -sf '$REAL_HOME/EyeWitness/EyeWitness.py' /usr/local/bin/eyewitness" || true
   else
     mv -f "$tmp/EyeWitness" "$REAL_HOME/EyeWitness"
-    ln -sf "$REAL_HOME/EyeWitness/EyeWitness.py" "$REAL_HOME/.local/bin/eyewitness" || true
   fi
 
-  chmod +x "$REAL_HOME/EyeWitness/EyeWitness.py" || true
-  echo_log "[+] EyeWitness installed (venv inside $REAL_HOME/EyeWitness). Use: source $REAL_HOME/EyeWitness/eyewitness-venv/bin/activate && python EyeWitness.py"
-  SUCCESS+=("eyewitness")
+  # prefer Python/EyeWitness.py if exists
+  if [ -f "$REAL_HOME/EyeWitness/Python/EyeWitness.py" ]; then
+    EW_PATH="$REAL_HOME/EyeWitness/Python/EyeWitness.py"
+  else
+    EW_PATH="$REAL_HOME/EyeWitness/EyeWitness.py"
+  fi
+
+  # create shim
+  if [ -f "$EW_PATH" ]; then
+    if run_sudo true 2>/dev/null; then
+      run_sudo "ln -sf '$EW_PATH' /usr/local/bin/eyewitness" || true
+      run_sudo "chmod +x '$EW_PATH'" || true
+    else
+      mkdir -p "$REAL_HOME/.local/bin"
+      ln -sf "$EW_PATH" "$REAL_HOME/.local/bin/eyewitness" || true
+      chmod +x "$EW_PATH" || true
+    fi
+    echo_log "[+] EyeWitness installed (venv inside $REAL_HOME/EyeWitness). Use: source $REAL_HOME/EyeWitness/eyewitness-venv/bin/activate && python EyeWitness.py"
+    SUCCESS+=("eyewitness")
+  else
+    err_log "EyeWitness main script not found at expected locations"
+    FAILED+=("eyewitness")
+  fi
+
+  trap - EXIT
   rm -rf "$tmp"
 }
 
@@ -228,6 +261,15 @@ install_sublist3r
 # NOTE: kalau mau nundain satu per satu, kasih flag atau comment sesuai instruksi lo
 install_xspear          # Ruby-based XSS scanner (ganti xssfinder)
 install_eyewitness      # Screenshot & recon visualizer (Python)
-install_goth_example    # Optional: OAuth example builder
+# Tambahan tools baru (eksekusi hanya kalau perlu)
+install_xspear
+install_eyewitness
+
+# Goth optional: set INSTALL_GOTH=1 sebelum panggil install.sh kalau mau
+if [ "${INSTALL_GOTH:-0}" = "1" ]; then
+  install_goth_example
+else
+  echo_log "Skipping goth example. Set INSTALL_GOTH=1 to enable."
+fi
 
 echo_log "modules/setup-python.sh finished."
