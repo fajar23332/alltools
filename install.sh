@@ -8,7 +8,7 @@ mkdir -p "$LOGDIR"
 export LOGFILE="$LOGDIR/install_$(date +%Y%m%d_%H%M%S).log"
 
 # source utils (PASTIKAN ini menunjuk ke folder modules)
-source modules/utils.sh
+source utils.sh
 
 echo_log "Start master installer (one command). Logs -> $LOGFILE"
 echo_log "Running modules..."
