@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# modules/utils.sh — shared helper functions for all modules
+# ~/alltools/utils.sh — universal helper for alltools project
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 set -euo pipefail
 
 # === Logging Setup ===
-LOGDIR="${LOGDIR:-$(pwd)/install_logs}"
+LOGDIR="${LOGDIR:-$SCRIPT_ROOT/install_logs}"
 mkdir -p "$LOGDIR"
 LOGFILE="${LOGFILE:-$LOGDIR/install_$(date +%Y%m%d_%H%M%S).log}"
 
@@ -17,51 +17,47 @@ run_sudo(){
   if is_root; then bash -c "$*"; else sudo bash -c "$*"; fi
 }
 
-# === Optimized binary check (fast, no deep loop) ===
+# === Optimized Binary Check ===
 is_installed_bin(){
   local bin="$1"
-  # check normal PATH first (super fast)
-  if command -v "$bin" >/dev/null 2>&1; then return 0; fi
-  # fallback dirs
-  local gopath
-  gopath="$(go env GOPATH 2>/dev/null || echo "$HOME/go")"
-  local paths=("/usr/local/bin" "/usr/bin" "$HOME/.local/bin" "$gopath/bin" "/snap/bin")
-  for p in "${paths[@]}"; do
+  command -v "$bin" >/dev/null 2>&1 && return 0
+  local gopath; gopath="$(go env GOPATH 2>/dev/null || echo "$HOME/go")"
+  for p in "/usr/local/bin" "/usr/bin" "$HOME/.local/bin" "$gopath/bin" "/snap/bin"; do
     [ -x "$p/$bin" ] && return 0
   done
   return 1
 }
 
-# === Fast get_version (non-blocking + timeout) ===
+# === Fast get_version (non-blocking + safe mode) ===
 get_version(){
-  local bin="$1"
-  local exe out flag
-  local TO=2  # seconds timeout, tweak as needed
-
+  local bin="$1" exe out flag TO=2
   exe="$(command -v "$bin" 2>/dev/null || echo "$bin")"
 
-  # try minimal flags (reduce hang risk)
+  # --- Special cases that hang with --version ---
+  case "$bin" in
+    httprobe)
+      out="$(timeout ${TO}s "$exe" -h 2>/dev/null | head -n1 || true)"
+      [[ -n "$out" ]] && { echo "$out"; return 0; }
+      ;;
+    gobuster)
+      out="$(timeout ${TO}s "$exe" -h 2>/dev/null | head -n1 || true)"
+      [[ -n "$out" ]] && { echo "$out"; return 0; }
+      ;;
+  esac
+
   for flag in "--version" "-v" "-V" "version"; do
     out="$(timeout ${TO}s "$exe" "$flag" 2>/dev/null | head -n1 || true)"
-    if [[ -n "$out" ]]; then
-      echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-      return 0
-    fi
+    [[ -n "$out" ]] && { echo "$out" | tr -d '\r'; return 0; }
   done
 
-  # last resort: plain call (some print version by default)
   out="$(timeout ${TO}s "$exe" 2>/dev/null | head -n1 || true)"
-  if [[ -n "$out" ]]; then
-    echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-    return 0
-  fi
+  [[ -n "$out" ]] && { echo "$out" | tr -d '\r'; return 0; }
 
   echo "unknown"
   return 1
 }
 
-# === Semver Compare Helper ===
-# Returns 0 if version A >= version B
+# === Semver Compare Helper (a >= b) ===
 ver_ge(){
   printf '%s\n%s\n' "$1" "$2" | awk -F. '{
     for(i=1;i<=3;i++){ a[i]=$i+0 }
@@ -74,9 +70,42 @@ ver_ge(){
   }' | grep -q 1
 }
 
-# === Optional: Quick summary helper ===
+# === Quick summary display ===
 quick_summary(){
   local total="$1" found="$2"
   local pct=$(( found * 100 / total ))
-  echo_log "Summary: ${found}/${total} tools found (${pct}%)"
+  if (( pct < 70 )); then color="\e[31m"  # merah
+  elif (( pct < 90 )); then color="\e[33m" # kuning
+  else color="\e[32m"; fi
+  echo -e "[$(date +%H:%M:%S)] Summary: ${color}${found}/${total} tools OK (${pct}%)\e[0m" | tee -a "$LOGFILE"
+}
+
+# === Generic retry wrapper ===
+retry(){
+  local max="$1"; shift
+  local count=0
+  until "$@"; do
+    count=$((count+1))
+    if (( count >= max )); then
+      err_log "Command failed after ${max} attempts: $*"
+      return 1
+    fi
+    echo_log "Retry $count/$max: $*"
+    sleep 3
+  done
+}
+
+# === Downloader helper (curl/wget/aria2c auto) ===
+fetch_file(){
+  local url="$1" dest="$2"
+  if command -v aria2c >/dev/null 2>&1; then
+    aria2c -x 8 -s 8 -k 1M -o "$dest" "$url" >>"$LOGFILE" 2>&1
+  elif command -v curl >/dev/null 2>&1; then
+    curl -L -o "$dest" "$url" >>"$LOGFILE" 2>&1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$dest" "$url" >>"$LOGFILE" 2>&1
+  else
+    err_log "No download tool found (need curl/wget/aria2c)"
+    return 1
+  fi
 }
