@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# modules/setup-snap.sh
-SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# modules/setup-extra.sh
 set -euo pipefail
+
+# import utils biar echo_log & run_sudo gak undefined
+source "$(dirname "$0")/../utils.sh" || true
 
 install_snap_apps(){
   if ! command -v snap >/dev/null 2>&1; then
@@ -93,4 +95,8 @@ trufflehog --version || echo "trufflehog ready"
 chaos-client -version || echo "chaos-client ready"
 
 
+# === Run all ===
 install_snap_apps
+install_naabu
+install_trufflehog
+install_chaos
