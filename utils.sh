@@ -30,7 +30,7 @@ is_installed_bin(){
   return 1
 }
 
-# ---------- Replace get_version() in modules/utils.sh ----------
+# REPLACE get_version() in modules/utils.sh with this function
 get_version(){
   local bin="${1:-}"
   if [[ -z "$bin" ]]; then
@@ -39,18 +39,29 @@ get_version(){
   fi
 
   local exe out
-  local TO=2   # seconds timeout, tweak if needed
+  local TO=2   # seconds timeout, tweak to 3-4 on slow VPS
 
   exe="$(command -v "$bin" 2>/dev/null || echo "$bin")"
 
-  # 1) Prefer -h (user request) — many tools print help reliably
+  # Tools that reliably print useful output with -h (and may hang on --version)
+  case "$bin" in
+    httprobe|gobuster|waybackurls|subfinder|gospider)
+      out="$(timeout ${TO}s "$exe" -h 2>/dev/null | head -n1 || true)"
+      if [[ -n "$out" ]]; then
+        echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+        return 0
+      fi
+      ;;
+  esac
+
+  # 1) Prefer -h for everything (user requested)
   out="$(timeout ${TO}s "$exe" -h 2>/dev/null | head -n1 || true)"
   if [[ -n "$out" ]]; then
     echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
     return 0
   fi
 
-  # 2) Then try common version flags as fallback
+  # 2) Fallback to common version flags
   for flag in "--version" "-v" "-V"; do
     out="$(timeout ${TO}s "$exe" "$flag" 2>/dev/null | head -n1 || true)"
     if [[ -n "$out" ]]; then
@@ -59,35 +70,7 @@ get_version(){
     fi
   done
 
-  # 3) Some binaries print useful info without flags
-  out="$(timeout ${TO}s "$exe" 2>/dev/null | head -n1 || true)"
-  if [[ -n "$out" ]]; then
-    echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-    return 0
-  fi
-
-  echo "unknown"
-  return 1
-}
-# ---------- end get_version() ----------
-  # --- Special cases that hang with --version ---
-case "$bin" in
-  httprobe|gobuster|waybackurls)
-    out="$(timeout ${TO}s "$exe" -h 2>/dev/null | head -n1 || true)"
-    [[ -n "$out" ]] && { echo "$out"; return 0; }
-    ;;
-esac
-
-  # Try common version flags (avoid blocking)
-  for flag in "--version" "-v" "-V" "version"; do
-    out="$(timeout ${TO}s "$exe" "$flag" 2>/dev/null | head -n1 || true)"
-    if [[ -n "$out" ]]; then
-      echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-      return 0
-    fi
-  done
-
-  # Last resort: run program without args (some print version/info)
+  # 3) Last resort: run without args (some CLIs print on plain run)
   out="$(timeout ${TO}s "$exe" 2>/dev/null | head -n1 || true)"
   if [[ -n "$out" ]]; then
     echo "$out" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
@@ -98,6 +81,7 @@ esac
   return 1
 }
 
+  
 # === Semver Compare Helper (a >= b) ===
 ver_ge(){
   if [[ -z "${1:-}" || -z "${2:-}" ]]; then return 1; fi
