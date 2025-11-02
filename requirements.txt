@@ -1,0 +1,7 @@
+colorama
+pyfiglet
+termcolor
+readchar
+rich        # nice terminal formatting (opsional)
+tqdm        # progress bars (opsional)
+ttkbootstrap  # tema modern untuk tkinter GUI
