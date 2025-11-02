@@ -5,7 +5,7 @@ Toolkit otomatis untuk instalasi, verifikasi, dan orkestrasi workflow bug huntin
 ## Instalasi Cepat
 
 ```bash
-git clone https://github.com/dolvin/BUGx.git ~/BUGx
+git clone https://github.com/D0Lv-1N/alltools.git
 cd ~/BUGx
 python3 setup.py
 ```
