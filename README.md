@@ -57,7 +57,7 @@ BUG.x adalah framework otomasi bug hunting yang cerdas dan terintegrasi. Framewo
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/yourusername/BUGx.git
+git clone https://github.com/D0Lv-1N/BUGx.git
 cd BUGx
 
 # 2. Make scripts executable
