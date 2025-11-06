@@ -421,7 +421,7 @@ class BugxRunner:
         self._execute_command("dalfox", cmd, target, timeout=11800)
 
         cmd = f"nuclei -l {gf_xss_file} -tags xss -c {speed} --severity low,medium,high,critical -je {nuclei_result} 2>/dev/null || echo '[]' > {nuclei_result}"
-        cmd = f"nuclei -l {katana_file} -tags xss -c {speed} --severity low,medium,high,critical -je {nuclei2_result} 2>/dev/null || echo '[]' > {nuclei_result}"
+        cmd = f"nuclei -l {katana_file} -c {speed} --severity low,medium,high,critical -je {nuclei2_result} 2>/dev/null || echo '[]' > {nuclei2_result}"
         self._execute_command("nuclei", cmd, target, timeout=1800)
 
         for result_file in [dalfox_result, nuclei_result, nuclei2_result]:
