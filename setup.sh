@@ -32,11 +32,10 @@ readonly HELP_DIR="$PROJECT_DIR/help_output"
 readonly TMP_DIR="$PROJECT_DIR/tmp"
 
 # --- Tool Lists ---
-# Only install tools that are actually used by run.py
-readonly APT_TOOLS=(arjun sqlmap)
-readonly PDTM_TOOLS=(subfinder httpx katana nuclei)
-readonly GO_INSTALL_MANUAL_TOOLS=(dalfox ffuf gau gf subjack)
-readonly BUILD_TOOLS=(gf-patterns)
+readonly APT_TOOLS=(arjun wfuzz sqlmap masscan)
+readonly PDTM_TOOLS=(aix alterx asnmap cdncheck cloudlist dnsx httpx interactsh-client interactsh-server katana mapcidr naabu notify nuclei proxify shuffledns simplehttpserver subfinder tldfinder tlsx tunnelx uncover urlfinder)
+readonly GO_INSTALL_MANUAL_TOOLS=(dalfox ffuf gau getJS gf subjack subjs)
+readonly BUILD_TOOLS=(massdns aquatone gitleaks gf-patterns)
 
 # --- Wordlist Definitions ---
 # Associative array mapping category to a space-separated list of URLs
@@ -84,7 +83,7 @@ EOF
 }
 
 init_dirs() {
-    mkdir -p "$BIN_DIR" "$TOOLS_DIR" "$LOGS_DIR" "$WORDLISTS_DIR" "$HELP_DIR" "$TMP_DIR" "$PROJECT_DIR/results"
+    mkdir -p "$BIN_DIR" "$TOOLS_DIR" "$LOGS_DIR" "$WORDLISTS_DIR" "$HELP_DIR" "$TMP_DIR"
     : > "$LOG_FILE"
     : > "$ERROR_LOG"
     info "Direktori proyek telah disiapkan."
@@ -333,12 +332,26 @@ configure_special_tools() {
     step "Menjalankan konfigurasi khusus..."
 
     # Create .gau.toml
+    # Create .gau.toml with proper TOML format
     info "Membuat file konfigurasi .gau.toml..."
     cat << EOF > "$HOME/.gau.toml"
 # .gau.toml - Konfigurasi default untuk gau
+    cat << 'EOF' > "$HOME/.gau.toml"
+# .gau.toml - Konfigurasi untuk GAU (GetAllURLs)
 # Dibuat secara otomatis oleh setup.sh
 blacklist = ["png", "jpg", "jpeg", "gif", "svg", "woff", "ttf", "eot", "css"]
 threads = 10
+
+threads = 2
+verbose = false
+retries = 15
+subdomains = false
+parameters = false
+providers = ["wayback", "commoncrawl", "otx", "urlscan"]
+blacklist = ["ttf", "woff", "svg", "png", "jpg"]
+json = false
+
+[urlscan]
   apikey = ""
 
 [filters]
@@ -350,6 +363,7 @@ threads = 10
   filtermimetypes = ["image/png", "image/jpg", "image/svg+xml"]
 EOF
     ok "File $HOME/.gau.toml berhasil dibuat."
+    ok "File $HOME/.gau.toml berhasil dibuat dengan format TOML yang benar."
 
     # Update nuclei templates
     if command_exists nuclei; then
@@ -383,6 +397,50 @@ download_wordlists() {
         info "  -> Membersihkan dan deduplikasi ${category}.txt..."
         sort -u -o "$merged_file" "$merged_file"
         ok "Wordlist untuk $category siap di $merged_file."
+    done
+}
+
+# --- Help Capture ---
+
+run_help_capture() {
+    step "Memulai proses capture output --help..."
+    info "Output akan disimpan di direktori: $HELP_DIR"
+
+    # Combine all tool lists into one
+    local all_tools=("${APT_TOOLS[@]}" "${PDTM_TOOLS[@]}" "${GO_INSTALL_MANUAL_TOOLS[@]}" "${BUILD_TOOLS[@]}")
+
+    for tool in "${all_tools[@]}"; do
+        if ! command_exists "$tool"; then
+            warn "Melewatkan help capture untuk $tool (tidak terinstal)."
+            continue
+        fi
+
+        info "Capturing help untuk: $tool"
+        local out_file="$HELP_DIR/$tool.txt"
+        local success=false
+
+        # Special case for masscan
+        if [[ "$tool" == "masscan" ]]; then
+            if timeout 5s masscan &> "$out_file"; then
+                : # Command ran, now check file content
+            fi
+        else
+            # Try -h first
+            if timeout 3s "$tool" -h &> "$out_file"; then
+                : # Command ran, now check file content
+            # If that fails, try --help
+            elif timeout 3s "$tool" --help &> "$out_file"; then
+                : # Command ran, now check file content
+            fi
+        fi
+
+        # Check if the output file is not empty, indicating successful capture
+        if [ -s "$out_file" ]; then
+            ok "Help untuk $tool berhasil di-capture."
+        else
+            err "Gagal capture help untuk $tool."
+            HELP_FAILED+=("$tool")
+        fi
     done
 }
 
@@ -430,97 +488,61 @@ EOF
     cat << 'EOF' > "$PROJECT_DIR/delete.sh"
 #!/usr/bin/env bash
 # ==============================================================================
-#               BUG.x Complete Uninstaller Script
+#               BUG.x Uninstaller Script
 # ==============================================================================
 #
 # -- WARNING --
-# This script will COMPLETELY remove the entire BUGx project directory!
-# Use with caution!
+# 1. This script removes all generated files and directories by setup.sh.
+# 2. It does NOT remove system-wide packages (APT, Go binaries) by default.
+# 3. Use the --force flag to attempt system-wide removal.
 #
 # ==============================================================================
 
 set -Eeuo pipefail
 
 readonly PROJECT_DIR="$HOME/BUGx"
-readonly C_YELLOW="\033[1;33m" C_RED="\033[1;31m" C_GREEN="\033[1;32m" C_RESET="\033[0m"
+readonly C_YELLOW="\033[1;33m" C_RED="\033[1;31m" C_RESET="\033[0m"
 
 info()    { echo -e "[INFO]  $*"; }
 warn()    { echo -e "${C_YELLOW}[WARN]${C_RESET}  $*"; }
-error()   { echo -e "${C_RED}[ERROR]${C_RESET} $*"; }
-ok()      { echo -e "${C_GREEN}[OK]${C_RESET}    $*"; }
-header()  { echo -e "\n\033[1m--- $* ---\033[0m"; }
+header()  { echo -e "\n\033[1m--- $S* ---\033[0m"; }
 
-echo ""
-echo "╔════════════════════════════════════════════════════════════════════╗"
-echo "║                   BUG.x COMPLETE UNINSTALLER                       ║"
-echo "╚════════════════════════════════════════════════════════════════════╝"
-echo ""
+header "Memulai Proses Pembersihan BUG.x"
 
-warn "This will DELETE the entire $PROJECT_DIR directory!"
-warn "All scan results, logs, and tools will be removed."
-echo ""
-read -p "Are you sure you want to continue? (yes/no): " confirm
+info "Menghapus direktori buatan setup.sh..."
+rm -rf "$PROJECT_DIR/bin"
+rm -rf "$PROJECT_DIR/tools"
+rm -rf "$PROJECT_DIR/logs"
+rm -rf "$PROJECT_DIR/wordlists"
+rm -rf "$PROJECT_DIR/help_output"
+rm -rf "$PROJECT_DIR/tmp"
+info "Direktori proyek telah dibersihkan."
 
-if [[ "$confirm" != "yes" ]]; then
-    info "Uninstallation cancelled."
-    exit 0
-fi
+if [[ "${1:-}" == "--force" ]]; then
+    warn "Opsi --force terdeteksi. Mencoba menghapus paket sistem..."
+    info "CATATAN: Ini akan meminta password sudo untuk menghapus paket APT."
 
-header "Starting Complete BUG.x Removal"
+    # Define tools to remove again, as this script is standalone
+    readonly APT_TOOLS=(arjun wfuzz sqlmap masscan)
+    readonly GO_TOOLS_TO_CLEAN=(dalfox ffuf gau getJS gf subjack subjs aquatone gitleaks) # etc.
 
-# Deactivate environment if active
-if [[ -n "${BUGX_ACTIVE:-}" ]]; then
-    info "Deactivating BUG.x environment..."
-    export PATH=$(echo "$PATH" | sed -e "s|$HOME/BUGx/bin:||")
-    unset BUGX_ACTIVE
-fi
+    header "Menghapus Paket APT"
+    sudo apt-get remove --purge -y "${APT_TOOLS[@]}" || warn "Beberapa paket APT mungkin gagal dihapus atau tidak terinstal."
 
-# Remove user config files
-header "Removing User Config Files"
-if [[ -f "$HOME/.gau.toml" ]]; then
-    info "Removing ~/.gau.toml..."
-    rm -f "$HOME/.gau.toml"
-    ok "Removed ~/.gau.toml"
-fi
-
-if [[ -d "$HOME/.gf" ]]; then
-    warn "Found ~/.gf directory (GF patterns)"
-    read -p "Remove ~/.gf directory? (yes/no): " remove_gf
-    if [[ "$remove_gf" == "yes" ]]; then
-        rm -rf "$HOME/.gf"
-        ok "Removed ~/.gf"
-    else
-        info "Kept ~/.gf directory"
-    fi
-fi
-
-# Remove entire project directory
-header "Removing BUG.x Project Directory"
-if [[ -d "$PROJECT_DIR" ]]; then
-    info "Removing $PROJECT_DIR..."
-
-    # Show what will be deleted
-    info "Contents to be deleted:"
-    du -sh "$PROJECT_DIR" 2>/dev/null || true
-
-    # Remove the entire directory
-    rm -rf "$PROJECT_DIR"
-
-    if [[ ! -d "$PROJECT_DIR" ]]; then
-        ok "Successfully removed $PROJECT_DIR"
-    else
-        error "Failed to remove $PROJECT_DIR completely"
-        exit 1
-    fi
+    header "Menghapus Binaries Go"
+    for tool in "${GO_TOOLS_TO_CLEAN[@]}"; do
+        rm -f "$(go env GOBIN)/$tool"
+    done
+    info "Selesai mencoba menghapus binaries Go."
 else
-    warn "$PROJECT_DIR not found. Already deleted?"
+    warn "Menjalankan dalam mode aman. Paket sistem tidak dihapus."
+    warn "Untuk menghapus paket sistem (APT, Go binaries), jalankan: $0 --force"
 fi
 
-header "Cleanup Complete"
-ok "BUG.x has been completely removed from your system!"
-info "System packages (apt/go) were NOT removed (safe cleanup)."
-info "To reinstall, clone the repo and run ./setup.sh again."
-echo ""
+header "Pembersihan Selesai"
+info "File yang dipertahankan: setup.sh, delete.sh, activate.sh, README.md, .git/"
+info "Untuk menyelesaikan, refresh shell Anda dengan menjalankan:"
+echo -e "  ${C_YELLOW}hash -r && exec bash${C_RESET}"
 
 EOF
 
@@ -555,15 +577,19 @@ print_summary() {
     divider
     ok "Setup Selesai."
     info "Langkah selanjutnya:"
-    echo -e "  1. Aktifkan environment: ${C_YELLOW}source activate.sh${C_RESET}"
-    echo -e "  2. Jalankan BUG.x: ${C_YELLOW}python3 run.py${C_RESET}"
-    echo -e "  3. Pilih mode 11 (AUTO HUNT) untuk one-click bug hunting!"
+    echo -e "  1. Aktifkan environment dengan menjalankan: ${C_YELLOW}source activate.sh${C_RESET}"
+    echo -e "  2. (Opsional) Capture output help untuk semua tools dengan: ${C_YELLOW}./setup.sh --help-only${C_RESET}"
 }
 
 # --- Main Execution ---
 main() {
     print_banner
     init_dirs
+
+    if [[ "${1:-}" == "--help-only" ]]; then
+        run_help_capture
+        exit 0
+    fi
 
     # --- Run Installation ---
     install_pdtm
