@@ -416,7 +416,7 @@ class BugxRunner:
         dalfox_result = os.path.join(TMP_DIR, f"{target_clean}_dalfox.json")
         nuclei_result = os.path.join(TMP_DIR, f"{target_clean}_nuclei_xss.json")
 
-        cmd = f"dalfox file {cleaned_file} -w {speed} -o {dalfox_result} --format json --silence 2>/dev/null || echo '[]' > {dalfox_result}"
+        cmd = f"dalfox file {cleaned_file} -w {speed} -o {dalfox_result} --skip-mining-all --format json --silence 2>/dev/null || echo '[]' > {dalfox_result}"
         self._execute_command("dalfox", cmd, target, timeout=1800)
 
         cmd = f"nuclei -l {cleaned_file} -tags xss -c {speed} -silent -je {nuclei_result} 2>/dev/null || echo '[]' > {nuclei_result}"
