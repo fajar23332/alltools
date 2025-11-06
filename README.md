@@ -80,11 +80,11 @@ Your Job: Buka report → Follow steps → Validate → Submit → Get paid! �
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/yourusername/BUGx.git
+git clone https://github.com/D0Lv-1N/BUGx.git
 cd BUGx
 
 # 2. Make scripts executable
-chmod +x setup.sh activate.sh delete.sh
+chmod +x setup.sh
 
 # 3. Run installer
 ./setup.sh
