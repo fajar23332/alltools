@@ -35,7 +35,7 @@ readonly TMP_DIR="$PROJECT_DIR/tmp"
 # Only install tools that are actually used by run.py
 readonly APT_TOOLS=(arjun sqlmap)
 readonly PDTM_TOOLS=(subfinder httpx katana nuclei)
-readonly GO_INSTALL_MANUAL_TOOLS=(dalfox ffuf gau gf subjack kxss)
+readonly GO_INSTALL_MANUAL_TOOLS=(dalfox ffuf gau gf subjack )
 readonly BUILD_TOOLS=(gf-patterns)
 
 # --- Wordlist Definitions ---
