@@ -410,6 +410,11 @@ class BugxRunner:
 
         cleaned_file = os.path.join(TMP_DIR, f"{target_clean}_cleaned_xss.txt")
         self._clean_and_deduplicate_urls(gf_xss_file, cleaned_file)
+#httpx 
+          else:
+            cmd = f"httpx -l {gf_xss_file} -t {speed} -o {gf_xss_file} -silent -mc 200"
+            self._execute_command("httpx", cmd, target, timeout=600)
+
 
         # Step 2: Vulnerability scanners scan GF filtered results directly
         self._log("Scanning GF filtered URLs with Dalfox and Nuclei...", level="INFO")
