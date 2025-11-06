@@ -310,281 +310,6 @@ class BugxRunner:
                 self._log(f"Error cleaning {item_path}: {e}", level="ERROR")
         self._log("Cleanup completed", level="SUCCESS")
 
-    def _calculate_confidence(self, finding, tool_name):
-        """Calculate confidence score for a finding"""
-        confidence = 50  # Base confidence
-
-        # Tool reliability scores
-        tool_scores = {
-            "nuclei": 85,
-            "dalfox": 90,
-            "sqlmap": 95,
-            "subjack": 80,
-            "ffuf": 70,
-            "kxss": 75,
-            "arjun": 65,
-        }
-
-        # Adjust based on tool
-        if tool_name.lower() in tool_scores:
-            confidence = tool_scores[tool_name.lower()]
-
-        # Boost confidence if finding has specific indicators
-        if isinstance(finding, dict):
-            if finding.get("severity") in ["critical", "high"]:
-                confidence += 10
-            if finding.get("matcher-name"):
-                confidence += 5
-            if finding.get("curl-command") or finding.get("request"):
-                confidence += 5
-
-        return min(confidence, 99)  # Cap at 99%
-
-    def _generate_validation_steps(self, finding, bug_type):
-        """Generate step-by-step validation guide"""
-        steps = []
-        url = finding.get("url", finding.get("host", "N/A"))
-
-        if bug_type.lower() == "xss":
-            steps = [
-                f"1. Buka URL: {url}",
-                "2. Inject payload di parameter yang vulnerable",
-                "3. Cek apakah payload ter-reflect di response",
-                "4. Buka Developer Tools (F12) dan cek Console untuk alert/popup",
-                "5. Screenshot sebagai bukti PoC",
-            ]
-        elif bug_type.lower() == "sqli":
-            steps = [
-                f"1. Buka URL: {url}",
-                "2. Tambahkan payload: ' OR '1'='1",
-                "3. Perhatikan SQL error message atau perubahan behavior",
-                "4. Coba time-based: ' OR SLEEP(5)--",
-                "5. Jika ada delay 5 detik, bug confirmed",
-                "6. Screenshot error message sebagai proof",
-            ]
-        elif bug_type.lower() == "lfi":
-            steps = [
-                f"1. Buka URL: {url}",
-                "2. Inject payload: ../../../../etc/passwd",
-                "3. Cek response apakah ada file content",
-                "4. Cari pattern: root:x:0:0",
-                "5. Screenshot file content sebagai bukti",
-            ]
-        elif bug_type.lower() == "ssrf":
-            steps = [
-                f"1. Buka URL: {url}",
-                "2. Setup Burp Collaborator atau interact.sh",
-                "3. Inject payload dengan Collaborator URL",
-                "4. Cek apakah ada callback/DNS request",
-                "5. Screenshot callback log sebagai proof",
-            ]
-        elif "subdomain takeover" in bug_type.lower():
-            steps = [
-                f"1. Buka subdomain: {url}",
-                "2. Cek CNAME record: nslookup atau dig",
-                "3. Identify service provider (GitHub, AWS, etc)",
-                "4. Claim subdomain di provider tersebut",
-                "5. Upload PoC file untuk verifikasi",
-            ]
-        else:
-            steps = [
-                f"1. Buka URL: {url}",
-                "2. Analisa finding details",
-                "3. Attempt exploitation sesuai vulnerability type",
-                "4. Dokumentasikan steps dan hasil",
-                "5. Screenshot sebagai bukti",
-            ]
-
-        return steps
-
-    def _generate_html_report(self, target, all_findings):
-        """Generate beautiful HTML validation report"""
-        target_clean = re.sub(r"[^a-zA-Z0-9_.-]", "_", target)
-        result_dir = os.path.join(RESULTS_DIR, target_clean)
-        html_file = os.path.join(result_dir, "VALIDATION_REPORT.html")
-
-        # Categorize findings by severity
-        critical = []
-        high = []
-        medium = []
-        low = []
-        info = []
-
-        bug_id = 1
-        for mode_name, findings in all_findings.items():
-            for finding in findings:
-                severity = "info"
-                if isinstance(finding, dict):
-                    severity = finding.get(
-                        "severity", finding.get("info", {}).get("severity", "info")
-                    ).lower()
-
-                # Add metadata
-                enhanced_finding = {
-                    "id": f"BUG-{bug_id:03d}",
-                    "mode": mode_name,
-                    "finding": finding,
-                    "confidence": self._calculate_confidence(finding, mode_name),
-                    "validation_steps": self._generate_validation_steps(
-                        finding, mode_name
-                    ),
-                }
-
-                if severity == "critical":
-                    critical.append(enhanced_finding)
-                elif severity == "high":
-                    high.append(enhanced_finding)
-                elif severity == "medium":
-                    medium.append(enhanced_finding)
-                elif severity == "low":
-                    low.append(enhanced_finding)
-                else:
-                    info.append(enhanced_finding)
-
-                bug_id += 1
-
-        # Generate HTML
-        html_content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BUG.x Validation Report - {target}</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a0e27; color: #fff; padding: 20px; }}
-        .container {{ max-width: 1200px; margin: 0 auto; }}
-        .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px; border-radius: 10px; margin-bottom: 30px; }}
-        .header h1 {{ font-size: 2.5em; margin-bottom: 10px; }}
-        .header p {{ opacity: 0.9; font-size: 1.1em; }}
-        .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }}
-        .summary-card {{ background: #1a1f3a; padding: 20px; border-radius: 8px; text-align: center; border-left: 4px solid; }}
-        .summary-card.critical {{ border-color: #e74c3c; }}
-        .summary-card.high {{ border-color: #e67e22; }}
-        .summary-card.medium {{ border-color: #f39c12; }}
-        .summary-card.low {{ border-color: #3498db; }}
-        .summary-card.info {{ border-color: #95a5a6; }}
-        .summary-card h2 {{ font-size: 2.5em; margin-bottom: 5px; }}
-        .summary-card p {{ opacity: 0.8; text-transform: uppercase; font-size: 0.9em; }}
-        .bug-section {{ margin-bottom: 30px; }}
-        .bug-section h2 {{ font-size: 1.8em; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid; }}
-        .bug-section.critical h2 {{ border-color: #e74c3c; color: #e74c3c; }}
-        .bug-section.high h2 {{ border-color: #e67e22; color: #e67e22; }}
-        .bug-section.medium h2 {{ border-color: #f39c12; color: #f39c12; }}
-        .bug-section.low h2 {{ border-color: #3498db; color: #3498db; }}
-        .bug-card {{ background: #1a1f3a; padding: 25px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid; }}
-        .bug-card.critical {{ border-color: #e74c3c; }}
-        .bug-card.high {{ border-color: #e67e22; }}
-        .bug-card.medium {{ border-color: #f39c12; }}
-        .bug-card.low {{ border-color: #3498db; }}
-        .bug-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }}
-        .bug-id {{ font-size: 1.2em; font-weight: bold; color: #667eea; }}
-        .confidence {{ background: #27ae60; padding: 5px 15px; border-radius: 20px; font-size: 0.9em; }}
-        .bug-info {{ margin-bottom: 15px; }}
-        .bug-info p {{ margin-bottom: 8px; opacity: 0.9; }}
-        .bug-info strong {{ color: #667eea; }}
-        .validation-steps {{ background: #0f1229; padding: 15px; border-radius: 5px; margin-top: 15px; }}
-        .validation-steps h4 {{ margin-bottom: 10px; color: #f39c12; }}
-        .validation-steps ol {{ margin-left: 20px; }}
-        .validation-steps li {{ margin-bottom: 8px; line-height: 1.6; }}
-        .code {{ background: #0f1229; padding: 10px; border-radius: 5px; font-family: 'Courier New', monospace; font-size: 0.9em; overflow-x: auto; margin-top: 10px; }}
-        .footer {{ text-align: center; margin-top: 50px; padding: 20px; opacity: 0.6; }}
-        .checkbox {{ margin-right: 10px; transform: scale(1.5); }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🔥 BUG.x Validation Report</h1>
-            <p>Target: {target} | Scan Date: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
-        </div>
-
-        <div class="summary">
-            <div class="summary-card critical">
-                <h2>{len(critical)}</h2>
-                <p>Critical</p>
-            </div>
-            <div class="summary-card high">
-                <h2>{len(high)}</h2>
-                <p>High</p>
-            </div>
-            <div class="summary-card medium">
-                <h2>{len(medium)}</h2>
-                <p>Medium</p>
-            </div>
-            <div class="summary-card low">
-                <h2>{len(low)}</h2>
-                <p>Low</p>
-            </div>
-            <div class="summary-card info">
-                <h2>{len(info)}</h2>
-                <p>Info</p>
-            </div>
-        </div>
-"""
-
-        # Add findings by severity
-        for severity_name, severity_list, color in [
-            ("Critical", critical, "critical"),
-            ("High", high, "high"),
-            ("Medium", medium, "medium"),
-            ("Low", low, "low"),
-        ]:
-            if severity_list:
-                html_content += f'<div class="bug-section {color}"><h2>🎯 {severity_name} Severity Bugs ({len(severity_list)})</h2>'
-
-                for bug in severity_list:
-                    finding = bug["finding"]
-                    url = finding.get(
-                        "url", finding.get("host", finding.get("matched-at", "N/A"))
-                    )
-                    name = finding.get("info", {}).get(
-                        "name",
-                        finding.get("template-id", finding.get("tool", bug["mode"])),
-                    )
-
-                    html_content += f"""
-        <div class="bug-card {color}">
-            <div class="bug-header">
-                <span class="bug-id">{bug["id"]}</span>
-                <span class="confidence">Confidence: {bug["confidence"]}%</span>
-            </div>
-            <div class="bug-info">
-                <p><strong>Type:</strong> {bug["mode"]}</p>
-                <p><strong>Name:</strong> {name}</p>
-                <p><strong>URL:</strong> <code>{url}</code></p>
-                <p><input type="checkbox" class="checkbox"> <strong>Mark as Validated</strong></p>
-            </div>
-            <div class="validation-steps">
-                <h4>📋 Validation Steps:</h4>
-                <ol>
-"""
-                    for step in bug["validation_steps"]:
-                        html_content += f"                    <li>{step}</li>\n"
-
-                    html_content += """                </ol>
-            </div>
-        </div>
-"""
-                html_content += "</div>\n"
-
-        html_content += """
-        <div class="footer">
-            <p>Generated by BUG.x Framework | Happy Bug Hunting! 🚀</p>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-        try:
-            with open(html_file, "w") as f:
-                f.write(html_content)
-            return html_file
-        except Exception as e:
-            self._log(f"Error generating HTML report: {e}", level="ERROR")
-            return None
-
     def _save_results(self, mode_name, target, findings):
         target_clean = re.sub(r"[^a-zA-Z0-9_.-]", "_", target)
         result_dir = os.path.join(RESULTS_DIR, target_clean)
@@ -644,14 +369,61 @@ class BugxRunner:
         target_clean = re.sub(r"[^a-zA-Z0-9_.-]", "_", target)
         katana_file = os.path.join(TMP_DIR, f"{target_clean}_katana.txt")
         gau_file = os.path.join(TMP_DIR, f"{target_clean}_gau.txt")
+        domains_file = os.path.join(TMP_DIR, f"{target_clean}_domains_for_gau.txt")
         all_urls_file = os.path.join(TMP_DIR, f"{target_clean}_all_urls.txt")
 
+        # Run katana for crawling
         cmd = f"katana -list {active_urls_file} -c {speed} -o {katana_file} -silent -jc"
         self._execute_command("katana", cmd, target, timeout=900)
 
         cmd = f"cat {active_urls_file} | gau --o {gau_file} 2>/dev/null || touch {gau_file}"
         self._execute_command("gau", cmd, target, timeout=600)
+        # Extract domains from active_urls_file for GAU
+        # GAU requires domains (not full URLs) as input
+        self._log("Extracting domains for GAU...", level="INFO")
+        try:
+            with open(active_urls_file, "r") as f:
+                urls = f.readlines()
 
+            domains = set()
+            for url in urls:
+                url = url.strip()
+                if url:
+                    # Extract domain from URL
+                    parsed = urlparse(url)
+                    if parsed.netloc:
+                        domains.add(parsed.netloc)
+                    else:
+                        # Fallback: try to extract domain from URL string
+                        domain = (
+                            url.replace("https://", "")
+                            .replace("http://", "")
+                            .split("/")[0]
+                        )
+                        if domain:
+                            domains.add(domain)
+
+            # Write domains to file
+            with open(domains_file, "w") as f:
+                for domain in sorted(domains):
+                    f.write(f"{domain}\n")
+
+            self._log(f"Extracted {len(domains)} unique domains for GAU", level="INFO")
+        except Exception as e:
+            self._log(f"Error extracting domains for GAU: {e}", level="WARNING")
+            # Fallback: use target domain only
+            with open(domains_file, "w") as f:
+                f.write(f"{target}\n")
+
+        # Run GAU with domains (GAU fetches URLs from web archives)
+        if os.path.exists(domains_file) and os.path.getsize(domains_file) > 0:
+            cmd = f"gau --threads {speed} --o {gau_file} < {domains_file} 2>/dev/null || touch {gau_file}"
+            self._execute_command("gau", cmd, target, timeout=600)
+        else:
+            self._log("No domains for GAU, skipping...", level="WARNING")
+            open(gau_file, "w").close()
+
+        # Combine all URLs from katana and GAU
         cmd = f"cat {katana_file} {gau_file} 2>/dev/null | sort -u > {all_urls_file}"
         subprocess.run(cmd, shell=True)
 
@@ -1021,96 +793,34 @@ class BugxRunner:
         return []
 
     def run_all_modes(self, target, speed):
-        self._log(
-            f"{SYMBOL_ROCKET} Starting AUTOMATIC BUG HUNTING for {target}", level="INFO"
-        )
-        print(f"\n{C_BRIGHT_CYAN}{'=' * 80}{C_RESET}")
-        print(
-            f"{C_BOLD}{C_BRIGHT_MAGENTA}🎯 AUTO HUNT MODE - Find All Bugs Automatically!{C_RESET}"
-        )
-        print(f"{C_BRIGHT_CYAN}{'=' * 80}{C_RESET}\n")
-
+        self._log(f"{SYMBOL_ROCKET} Starting RUN ALL MODES for {target}", level="INFO")
         all_findings = {}
-        mode_names = [
-            "XSS",
-            "SQLi",
-            "LFI",
-            "SSRF",
-            "RCE",
-            "Subdomain Takeover",
-            "Information Disclosure",
-            "Auth Bypass",
-            "API Security",
-            "Full Scan",
-        ]
-
         for mode_num in range(1, 11):
-            mode_name = mode_names[mode_num - 1]
-            self._log(
-                f"\n{SYMBOL_STAR} [{mode_num}/10] Scanning for {mode_name}...",
-                level="INFO",
-            )
+            self._log(f"\n{SYMBOL_STAR} Running Mode {mode_num}...", level="INFO")
             findings = self.run_mode(mode_num, target, speed)
+            mode_name = [
+                "XSS",
+                "SQLi",
+                "LFI",
+                "SSRF",
+                "RCE",
+                "Subdomain Takeover",
+                "Information Disclosure",
+                "Auth Bypass",
+                "API Security",
+                "Full Scan",
+            ][mode_num - 1]
             all_findings[mode_name] = findings
-            print(
-                f"{C_GREEN}{SYMBOL_SUCCESS} {mode_name}: {len(findings)} findings{C_RESET}"
-            )
-
         total_findings = sum(len(f) for f in all_findings.values())
-
-        # Generate HTML validation report
-        print(f"\n{C_BRIGHT_YELLOW}📄 Generating validation report...{C_RESET}")
-        html_report = self._generate_html_report(target, all_findings)
-
-        # Save consolidated JSON
-        target_clean = re.sub(r"[^a-zA-Z0-9_.-]", "_", target)
-        result_dir = os.path.join(RESULTS_DIR, target_clean)
-        consolidated_json = os.path.join(result_dir, "ALL_FINDINGS.json")
-
-        try:
-            with open(consolidated_json, "w") as f:
-                json.dump(
-                    {
-                        "target": target,
-                        "scan_time": datetime.now().isoformat(),
-                        "total_findings": total_findings,
-                        "findings_by_mode": all_findings,
-                    },
-                    f,
-                    indent=4,
-                )
-        except Exception as e:
-            self._log(f"Error saving consolidated results: {e}", level="ERROR")
-
-        # Display summary
         print("\n")
-        print(f"{C_BRIGHT_CYAN}{'=' * 80}{C_RESET}")
-        print(f"{C_BOLD}{C_BRIGHT_GREEN}✅ AUTOMATIC BUG HUNTING COMPLETED!{C_RESET}")
-        print(f"{C_BRIGHT_CYAN}{'=' * 80}{C_RESET}\n")
-
         self._print_box(
-            f"{SYMBOL_SCAN} SCAN SUMMARY {SYMBOL_SCAN}\n\n"
+            f"{SYMBOL_SCAN} RUN ALL SUMMARY {SYMBOL_SCAN}\n"
             + f"Target: {target}\n"
             + f"Total Findings: {total_findings}\n"
-            + f"Modes Executed: 10/10\n\n"
-            + f"{SYMBOL_STAR} Next Steps:\n"
-            + f"1. Open HTML Report: {html_report}\n"
-            + f"2. Follow validation steps for each bug\n"
-            + f"3. Screenshot proof of concept\n"
-            + f"4. Submit to bug bounty program!\n\n"
-            + f"JSON Data: {consolidated_json}",
+            + f"Modes Executed: 10",
             C_BRIGHT_MAGENTA,
             80,
         )
-
-        if html_report:
-            print(
-                f"\n{C_BRIGHT_GREEN}{SYMBOL_SUCCESS} HTML Validation Report: {C_BOLD}{html_report}{C_RESET}"
-            )
-            print(
-                f"{C_BRIGHT_YELLOW}💡 Tip: Open the HTML file in your browser for a beautiful validation checklist!{C_RESET}\n"
-            )
-
         return all_findings
 
     def main(self):
@@ -1127,7 +837,7 @@ class BugxRunner:
             8: "Auth Bypass",
             9: "API Security",
             10: "Full Scan - All Vulnerabilities",
-            11: "🔥 AUTO HUNT - Find All Bugs Automatically! (Just Validate)",
+            11: "Run All - Execute All Modes",
         }
         for num, desc in modes.items():
             print(f"{C_YELLOW}{num}. {desc}{C_RESET}")
