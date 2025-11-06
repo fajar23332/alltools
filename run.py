@@ -359,7 +359,7 @@ class BugxRunner:
             with open(active_urls_file, "w") as f:
                 f.write(f"http://{target}\nhttps://{target}\n")
         else:
-            cmd = f"httpx -l {subdomains_file} -t {speed} -o {active_urls_file} -silent -mc 200,301,302,403"
+            cmd = f"httpx -l {subdomains_file} -t {speed} -o {active_urls_file} -silent -mc 200,302"
             self._execute_command("httpx", cmd, target, timeout=600)
 
         return active_urls_file
@@ -371,13 +371,13 @@ class BugxRunner:
 
         # Step 1: Run katana for crawling
         self._log("Running Katana crawler...", level="INFO")
-        cmd = f"katana -list {active_urls_file} -c {speed} -o {katana_file} -silent -jc"
+        cmd = f"katana -list {active_urls_file} -c {speed} -o {katana_file} "
         self._execute_command("katana", cmd, target, timeout=900)
 
         # Step 2: Run GAU on katana results (GAU processes URLs from stdin)
         self._log("Running GAU on Katana results...", level="INFO")
         if os.path.exists(katana_file) and os.path.getsize(katana_file) > 0:
-            cmd = f"cat {katana_file} | gau --threads {speed} --o {gau_file} 2>/dev/null || touch {gau_file}"
+            cmd = f"cat {active_urls_file} | gau --threads {speed} --o {gau_file} 2>/dev/null || touch {gau_file}"
             self._execute_command("gau", cmd, target, timeout=600)
         else:
             self._log("Katana returned no results, skipping GAU", level="WARNING")
@@ -405,15 +405,11 @@ class BugxRunner:
         # Step 1: GF filters GAU results for XSS patterns
         self._log("GF filtering GAU results for XSS patterns...", level="INFO")
         gf_xss_file = os.path.join(TMP_DIR, f"{target_clean}_gf_xss.txt")
-        cmd = f"cat {gau_file} | gf xss > {gf_xss_file} 2>/dev/null || touch {gf_xss_file}"
+        cmd = f"cat {gau_file} | gf xss | httpx -mc 200 -t {speed} > {gf_xss_file} 2>/dev/null || touch {gf_xss_file}"
         self._execute_command("gf", cmd, target, timeout=300)
 
         cleaned_file = os.path.join(TMP_DIR, f"{target_clean}_cleaned_xss.txt")
         self._clean_and_deduplicate_urls(gf_xss_file, cleaned_file)
-#httpx 
-          else:
-            cmd = f"httpx -l {gf_xss_file} -t {speed} -o {gf_xss_file} -silent -mc 200"
-            self._execute_command("httpx", cmd, target, timeout=600)
 
 
         # Step 2: Vulnerability scanners scan GF filtered results directly
@@ -421,10 +417,11 @@ class BugxRunner:
         dalfox_result = os.path.join(TMP_DIR, f"{target_clean}_dalfox.json")
         nuclei_result = os.path.join(TMP_DIR, f"{target_clean}_nuclei_xss.json")
 
-        cmd = f"dalfox file {gf_xss_file} -w {speed} -o {dalfox_result} --skip-mining-all  --follow-redirects --format json 2>/dev/null || echo '[]' > {dalfox_result} "
+        cmd = f"dalfox file {gf_xss_file} -w {speed} -o {dalfox_result} --skip-mining-all  --F --format json 2>/dev/null || echo '[]' > {dalfox_result} "
         self._execute_command("dalfox", cmd, target, timeout=11800)
 
-        cmd = f"nuclei -l {gf_xss_file} -tags xss -c {speed} --severity low,medium,high,critical -silent -je {nuclei_result} 2>/dev/null || echo '[]' > {nuclei_result}"
+        cmd = f"nuclei -l {gf_xss_file} -tags xss -c {speed} --severity low,medium,high,critical -je {nuclei_result} 2>/dev/null || echo '[]' > {nuclei_result}"
+        cmd = f"nuclei -l {katana_file} -tags xss -c {speed} --severity low,medium,high,critical -je {nuclei_result} 2>/dev/null || echo '[]' > {nuclei_result}"
         self._execute_command("nuclei", cmd, target, timeout=1800)
 
         for result_file in [dalfox_result, nuclei_result]:
