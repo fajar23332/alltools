@@ -188,14 +188,16 @@ func RunAggressiveExternalRecon(targets []Target, concurrency int, verbose bool)
 	}
 	ctx.ExternalUsed = append(ctx.ExternalUsed, "httpx")
 
-	// 3) gau dari hasil httpx
-	gauCount, err := runGauFromFile(httpxSubsPath, gauPath, concurrency, verbose)
+	// 3) gau dari hasil httpx(subs) dengan piping:
+	//    cat httpx_subs.txt | gau --threads <c> > gau.txt
+	gauCount, err := runGauPiped(httpxSubsPath, gauPath, concurrency, verbose)
 	if err != nil || gauCount == 0 {
 		return RunDefaultRecon(targets, concurrency, verbose)
 	}
 	ctx.ExternalUsed = append(ctx.ExternalUsed, "gau")
 
-	// 4) httpx pada hasil gau
+	// 4) httpx pada hasil gau (final clean):
+	//    httpx -l gau.txt -mc 200 [-silent] -t <c> -o clean.txt
 	httpx2Count, cleanURLs, err := runHttpxListToFileAndSlice(gauPath, cleanPath, concurrency, verbose)
 	if err != nil || httpx2Count == 0 {
 		return RunDefaultRecon(targets, concurrency, verbose)
@@ -456,17 +458,20 @@ func runHttpxListToFileAndSlice(inputPath, outPath string, concurrency int, verb
 	return len(lines), lines, nil
 }
 
-// runGauFromFile:
-// - Membaca list host/URL dari inputPath,
-// - Untuk setiap baris, menjalankan `gau --threads=<c> <host>`,
-// - Menulis semua hasil ke outPath.
-// - Mengembalikan jumlah total baris URL yang dihasilkan.
-func runGauFromFile(inputPath, outPath string, concurrency int, verbose bool) (int, error) {
-	inData, err := os.ReadFile(inputPath)
-	if err != nil {
-		return 0, fmt.Errorf("failed reading httpx input for gau: %w", err)
+// runGauPiped:
+//   - Menjalankan pola:
+//     cat httpxSubsPath | gau --threads=<c> > outPath
+//   - Mengembalikan jumlah total baris URL yang dihasilkan.
+func runGauPiped(httpxSubsPath, outPath string, concurrency int, verbose bool) (int, error) {
+	if !binaryExists("gau") {
+		return 0, fmt.Errorf("gau not found")
 	}
-	hosts := strings.Split(strings.TrimSpace(string(inData)), "\n")
+
+	inFile, err := os.Open(httpxSubsPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed reading httpx(subs) for gau: %w", err)
+	}
+	defer inFile.Close()
 
 	outFile, err := os.Create(outPath)
 	if err != nil {
@@ -474,47 +479,30 @@ func runGauFromFile(inputPath, outPath string, concurrency int, verbose bool) (i
 	}
 	defer outFile.Close()
 
-	total := 0
-	for _, h := range hosts {
-		h = strings.TrimSpace(h)
-		if h == "" {
-			continue
-		}
-		args := []string{
-			fmt.Sprintf("--threads=%d", safeConcurrency(concurrency)),
-			h,
-		}
-		if verbose {
-			fmt.Printf("[gau] running: gau %s\n", strings.Join(args, " "))
-		}
-		cmd := exec.Command("gau", args...)
-		out, err := cmd.CombinedOutput()
-		if verbose && len(out) > 0 {
-			sc := bufio.NewScanner(strings.NewReader(string(out)))
-			for sc.Scan() {
-				line := strings.TrimSpace(sc.Text())
-				if line != "" {
-					fmt.Printf("[gau] %s\n", line)
-				}
-			}
-		}
-		if err != nil {
-			if verbose {
-				fmt.Printf("[gau] error for %s: %v\n", h, err)
-			}
-			continue
-		}
-		if len(out) > 0 {
-			if _, werr := outFile.Write(out); werr != nil {
-				return total, fmt.Errorf("failed writing gau output: %w", werr)
-			}
-			if out[len(out)-1] != '\n' {
-				_, _ = outFile.WriteString("\n")
-			}
-			total += countNonEmptyLines(string(out))
-		}
+	args := []string{
+		fmt.Sprintf("--threads=%d", safeConcurrency(concurrency)),
+	}
+	if verbose {
+		fmt.Printf("[gau] running: cat %s | gau %s > %s\n",
+			httpxSubsPath, strings.Join(args, " "), outPath)
 	}
 
+	cmd := exec.Command("gau", args...)
+	cmd.Stdin = inFile
+	cmd.Stdout = outFile
+
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("gau failed: %w", err)
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed reading gau output: %w", err)
+	}
+	total := countNonEmptyLines(string(data))
+	if verbose {
+		fmt.Printf("[gau] total URLs from gau: %d\n", total)
+	}
 	return total, nil
 }
 
