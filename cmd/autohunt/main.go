@@ -1,274 +1,195 @@
 package main
 
 import (
+	"autohunt/internal/core"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
-	"time"
-
-	"autohunt/internal/core"
-	"autohunt/internal/modules"
 )
 
-// This main implements a full-power pipeline using ScanContext:
+const (
+	moduleNuclei = "nuclei"
+	moduleFFUF   = "ffuf"
+)
+
+// Desain baru (eksternal-only, sesuai permintaan):
 //
-// 1) Target initialization
-// 2) FullRecon:
-//    - Basic HTTP recon
-//    - URL pool (crawler + static paths + optional external tools / historical sources)
-//    - Live URL filter (httpx-style / internal)
-//    - Param classification into buckets (gf-style)
-// 3) Vulnerability scanning:
-//    - Modules operate on ScanContext (buckets + targets + recon)
-// 4) Optional FFUF fuzzing (--fuzzing)
-// 5) Reporting
+// - Semua vulnerability scanning menggunakan nuclei.
+// - Semua recon dan fuzzing menggunakan tools eksternal:
+//   - subfinder, httpx, gau, nuclei, ffuf.
+// - Tidak ada modul vuln internal lagi.
+//
+// Mode:
+//
+// 1) Default:
+//    autohunt -u target
+//    - subfinder -d <domain>
+//    - httpx dari hasil subfinder (mc=200)
+//    - nuclei -l <list> -c <concurrency>
+//    - tanpa --severity khusus
+//
+// 2) -F / --fullpower:
+//    autohunt -u target -F
+//    - Sama seperti default (explicit), subfinder + httpx + nuclei.
+//
+// 3) -fa / --fullpower-aggressive:
+//    autohunt -u target -fa
+//    - subfinder -d <domain>
+//    - httpx -l subs.txt -mc 200
+//    - gau dari hasil httpx
+//    - httpx -l gau.txt -mc 200
+//    - nuclei -l clean.txt -c <concurrency> --severity medium,high,critical
+//
+// 4) -tags:
+//    autohunt -u target --tags <tag1,tag2,...>
+//    - subfinder + httpx
+//    - nuclei -l <list> -c <concurrency> -tags <tags>
+//
+// 5) -fuzzing (standalone):
+//    autohunt -u https://target.com/FUZZ -fuzzing [-v] [-c N]
+//    - ffuf -u <target> -w wordlists/dirs_common.txt -mc 200 -r -t <c>
+//    - jika -v → tambahkan -v ke ffuf
+//    - tidak menjalankan recon/nuclei
+//
+// Catatan penting:
+// - Semua file sementara (subs.txt, httpx.txt, gau.txt, clean.txt, nuclei_targets.txt) dibuat
+//   di direktori temporary dan DIHAPUS setelah selesai.
+// - Jika binary eksternal tidak tersedia, mode terkait akan fail jelas.
+// - -F adalah versi ringan di bawah -fa (tanpa gau, tanpa severity khusus).
+// - gau hanya digunakan di -fa, setelah httpx dari subfinder.
 
 func main() {
 	// CLI flags
-	target := flag.String("u", "", "Single target URL or domain, e.g. https://example.com or example.com")
+	target := flag.String("u", "", "Single target URL or domain (e.g. https://example.com or example.com)")
 	targetsFile := flag.String("f", "", "File with list of targets (one per line)")
-	output := flag.String("o", "autohunt_result.json", "Output JSON file")
-	timeout := flag.Int("timeout", 900, "Max scan time in seconds (global)")
-	concurrency := flag.Int("c", 10, "Maximum concurrent HTTP operations (tuning: 5-50)")
-	verbose := flag.Bool("v", false, "Verbose output")
-	fuzzing := flag.Bool("fuzzing", false, "Run ffuf-based fuzzing after vulnerability scanning (requires ffuf in PATH and FUZZ URL)")
-	tagsFilter := flag.String("tags", "", "Comma-separated tags to filter findings in the final report (e.g. xss,sqli,lfi,sensitive(ffuf))")
+	output := flag.String("o", "autohunt_result.json", "Output JSON file for nuclei results")
+	concurrency := flag.Int("c", 10, "Maximum concurrency for external tools (nuclei, ffuf, httpx, etc.)")
+	verbose := flag.Bool("v", false, "Verbose output (show external tool commands/output)")
+	fuzzing := flag.Bool("fuzzing", false, "Run ffuf-only fuzzing mode against target (standalone if used without -F/-fa/--tags)")
+	tagsFilter := flag.String("tags", "", "Comma-separated tags passed directly to nuclei as --tags")
 
-	// Full-power modes:
-	// --fullpower / -F  : mode maksimal yang menjalankan seluruh pipeline recon + modul vuln secara terstruktur.
-	// --fullpower-aggressive / -fa :
-	//   mode sangat agresif (disarankan hanya di VPS / environment kuat),
-	//   meningkatkan intensitas dan cakupan scan sehingga lebih mendekati coverage maksimum.
-	fullpower := flag.Bool("fullpower", true, "Enable full-power mode: orchestrated recon + external tools + targeted vuln scanning")
-	flag.BoolVar(fullpower, "F", true, "Alias for --fullpower")
+	// Mode:
+	fullpower := flag.Bool("fullpower", false, "Fullpower mode: subfinder + httpx + nuclei (explicit, ringan)")
+	flag.BoolVar(fullpower, "F", false, "Alias for --fullpower")
 
-	fullpowerAggressive := flag.Bool("fullpower-aggressive", false, "EXTREME mode: very aggressive full-power scanning, recommended ONLY on VPS (high load, wide coverage)")
+	fullpowerAggressive := flag.Bool("fullpower-aggressive", false, "Aggressive mode: subfinder + httpx + gau + httpx + nuclei --severity medium,high,critical")
 	flag.BoolVar(fullpowerAggressive, "fa", false, "Alias for --fullpower-aggressive")
 
 	flag.Parse()
 
-	// Stage 1: Target initialization
 	stageBanner("STAGE 1: TARGET INITIALIZATION")
 
 	if *target == "" && *targetsFile == "" {
-		log.Fatalf("[!] Please provide either -u <url/domain> or -f <file>")
+		log.Fatalf("[!] Please provide -u <target> or -f <file> (single target mode is recommended for this design)")
+	}
+	if *targetsFile != "" {
+		log.Fatalf("[!] File mode (-f) is not supported in this external-only CLI yet; use -u with single target")
 	}
 
-	// Jika mode agresif diaktifkan, paksa fullpower aktif juga.
-	if *fullpowerAggressive {
-		*fullpower = true
+	rawTarget := strings.TrimSpace(*target)
+	if rawTarget == "" {
+		log.Fatalf("[!] Invalid target")
 	}
 
-	targets, err := core.LoadTargets(*target, *targetsFile)
-	if err != nil {
-		log.Fatalf("[!] Failed to load targets: %v", err)
+	// Normalize: jika tanpa scheme, asumsikan https
+	if !strings.HasPrefix(rawTarget, "http://") && !strings.HasPrefix(rawTarget, "https://") {
+		rawTarget = "https://" + rawTarget
 	}
-	if len(targets) == 0 {
-		log.Fatalf("[!] No valid targets loaded")
-	}
-	fmt.Printf("[*] Loaded %d target(s)\n", len(targets))
 
-	// Stage 2: Recon / FullRecon
-	var scanCtx *core.ScanContext
-	globalDeadline := time.Now().Add(time.Duration(*timeout) * time.Second)
+	fmt.Printf("[*] Target: %s\n", rawTarget)
+
+	// Standalone -fuzzing mode (tidak boleh bercampur dengan -F / -fa / --tags)
+	if *fuzzing && !*fullpower && !*fullpowerAggressive && *tagsFilter == "" {
+		stageBanner("STANDALONE FFUF MODE (-fuzzing)")
+		if err := core.RunFFUFStandalone(rawTarget, *concurrency, *verbose); err != nil {
+			log.Fatalf("[!] FFUF error: %v", err)
+		}
+		return
+	}
+
+	// Siapkan concurrency aman
 	if *concurrency < 1 {
 		*concurrency = 1
 	}
 
-	if *fullpower && !*fullpowerAggressive {
-		stageBanner("STAGE 2: FULL RECON (internal + optional external)")
-		start := time.Now()
-		scanCtx = core.FullReconWithConcurrency(targets, true, *verbose, *concurrency)
-		fmt.Printf("[*] FullRecon completed in %s\n", time.Since(start).Truncate(time.Millisecond))
-		fmt.Printf("[*] URL pool: %d, live URLs: %d\n", len(scanCtx.URLPool), len(scanCtx.LiveURLs))
-		if len(scanCtx.ExternalUsed) > 0 {
-			fmt.Printf("[*] External recon tools leveraged: %v\n", scanCtx.ExternalUsed)
-		}
-	} else if *fullpowerAggressive {
-		stageBanner("STAGE 2: FULL RECON AGGRESSIVE (-fullpower-aggressive / -fa)")
-		fmt.Println("[!] WARNING: Aggressive mode is resource-intensive. Strongly recommended to run on a VPS or powerful machine.")
-		fmt.Println("[!] This mode increases breadth/depth of scanning and may generate significant traffic (still non-destructive).")
-
-		// Jika user tidak set -c, gunakan nilai concurrency default yang lebih tinggi untuk -fa
-		if flag.Lookup("c").Value.String() == "10" {
-			// Naikkan default concurrency khusus untuk mode agresif
-			*concurrency = 40
-			fmt.Printf("[*] Aggressive mode: concurrency auto-set to %d (override with -c if needed)\n", *concurrency)
-		}
-
-		start := time.Now()
-		scanCtx = core.FullReconWithConcurrency(targets, true, *verbose, *concurrency)
-		// Tandai context sebagai agresif agar modul bisa memperluas cakupan payload & kombinasi secara aman.
-		if scanCtx != nil {
-			scanCtx.Aggressive = true
-		}
-		fmt.Printf("[*] Aggressive FullRecon completed in %s\n", time.Since(start).Truncate(time.Millisecond))
-		fmt.Printf("[*] URL pool: %d, live URLs: %d\n", len(scanCtx.URLPool), len(scanCtx.LiveURLs))
-		if len(scanCtx.ExternalUsed) > 0 {
-			fmt.Printf("[*] External recon tools leveraged (aggressive): %v\n", scanCtx.ExternalUsed)
-		}
-	} else {
-		stageBanner("STAGE 2: BASIC RECON")
-		start := time.Now()
-		recon := core.ReconBasicWithConcurrency(targets, *concurrency)
-
-		scanCtx = &core.ScanContext{
-			Targets: targets,
-			Recon:   recon,
-		}
-		fmt.Printf("[*] Basic recon completed in %s\n", time.Since(start).Truncate(time.Millisecond))
-
-		// Minimal URL pool for non-fullpower mode: crawl each target lightly
-		for _, t := range targets {
-			eps := core.CrawlBasicWithConcurrency(t, 40, *concurrency)
-			for _, ep := range eps {
-				scanCtx.URLPool = append(scanCtx.URLPool, ep.URL)
-			}
-		}
-		scanCtx.LiveURLs = scanCtx.URLPool
-		scanCtx.Buckets = core.ClassifyParams(scanCtx.LiveURLs)
-
-		if *verbose {
-			for _, r := range recon {
-				fmt.Printf("    - %s [%s] tech=%v\n", r.Target, r.Status, r.Technologies)
-			}
-		}
+	// Pastikan nuclei tersedia untuk semua mode selain standalone ffuf
+	if !hasBinary(moduleNuclei) {
+		log.Fatalf("[!] nuclei binary not found in PATH; install nuclei first")
 	}
 
-	if scanCtx == nil || len(scanCtx.Targets) == 0 {
-		log.Fatalf("[!] Scan context initialization failed")
-	}
+	// STAGE 2: RECON (external-only)
+	stageBanner("STAGE 2: RECON")
+	var nucleiInput []string
 
-	if *verbose {
-		fmt.Printf("[*] Bucket summary: SQLi=%d, XSS=%d, LFI=%d, Redirect=%d, SSRF=%d\n",
-			len(scanCtx.Buckets.SQLi),
-			len(scanCtx.Buckets.XSS),
-			len(scanCtx.Buckets.LFI),
-			len(scanCtx.Buckets.OpenRedirect),
-			len(scanCtx.Buckets.SSRF),
-		)
-	}
-
-	// Stage 3: Vulnerability scanning with ScanContext-aware modules
-	stageBanner("STAGE 3: VULNERABILITY SCANNING")
-
-	// Define modules using the new ContextModule interface.
-	// Each module reads from scanCtx (targets, buckets, live URLs, etc).
-	modGroups := []struct {
-		Title   string
-		Modules []core.ContextModule
-	}{
-		{
-			Title: "Surface & Misconfiguration Checks",
-			Modules: []core.ContextModule{
-				modules.NewSensitiveFilesContextModule(),
-				modules.NewDirListingContextModule(),
-				modules.NewSecurityHeadersContextModule(),
-				modules.NewCORSContextModule(),
-			},
-		},
-		{
-			Title: "Injection, File Inclusion & Redirect/SSRF Checks",
-			Modules: []core.ContextModule{
-				modules.NewXSSReflectContextModule(),
-				modules.NewSQLiErrorContextModule(),
-				modules.NewLFIBasicContextModule(),
-				modules.NewOpenRedirectContextModule(),
-				modules.NewSSRFContextModule(),
-			},
-		},
-		{
-			Title: "Technology & Fingerprint Intelligence",
-			Modules: []core.ContextModule{
-				modules.NewCVEFingerprintContextModule(),
-			},
-		},
-	}
-
-	var allFindings []core.Finding
-
-	for gi, group := range modGroups {
-		if time.Now().After(globalDeadline) {
-			fmt.Printf("[!] Global timeout reached before group %d (%s)\n", gi+1, group.Title)
-			break
-		}
-
-		fmt.Printf("\n--- [%d/%d] %s ---\n", gi+1, len(modGroups), group.Title)
-
-		for mi, mod := range group.Modules {
-			if time.Now().After(globalDeadline) {
-				fmt.Printf("[!] Global timeout reached before module %s\n", mod.Name())
-				break
-			}
-
-			fmt.Printf("[*] [%d.%d] Running module: %s ... ", gi+1, mi+1, mod.Name())
-			start := time.Now()
-			findings, err := runContextModuleWithBudget(mod, scanCtx, globalDeadline, *concurrency)
-			duration := time.Since(start).Truncate(time.Millisecond)
-
-			if err != nil {
-				fmt.Printf("ERR (%s): %v\n", duration, err)
-				continue
-			}
-
-			fmt.Printf("OK (%s), findings: %d\n", duration, len(findings))
-			if *verbose && len(findings) > 0 {
-				for _, f := range findings {
-					fmt.Printf("    - [%s] %s | %s | %s\n", f.Severity, f.Module, f.Endpoint, f.Type)
-				}
-			}
-
-			allFindings = append(allFindings, findings...)
-		}
-	}
-
-	// Optional: FFUF-based fuzzing (separate dari main recon/vuln pipeline)
-	// Hanya dijalankan jika user menambahkan --fuzzing.
-	// Perilaku:
-	// - Menggunakan ffuf (jika tersedia di PATH)
-	// - Target URL otomatis dipastikan mengandung FUZZ (append /FUZZ jika belum ada)
-	// - Menggunakan wordlists/dirs_common.txt sebagai wordlist utama
-	// - Menambah temuan ke allFindings sebagai Module="FFUF" dengan tag "sensitive(ffuf)"
-	if *fuzzing {
-		stageBanner("STAGE 4: FFUF FUZZING (--fuzzing)")
-		ffufFindings, err := modules.RunFFUFFuzzing(scanCtx, *concurrency, *verbose)
+	switch {
+	case *fullpowerAggressive:
+		fmt.Println("[*] Mode: -fa (aggressive) -> subfinder + httpx + gau + httpx (mc=200)")
+		var err error
+		nucleiInput, err = runAggressiveRecon(rawTarget, *concurrency, *verbose)
 		if err != nil {
-			fmt.Printf("[!] FFUF fuzzing error: %v\n", err)
-		} else {
-			fmt.Printf("[*] FFUF findings: %d\n", len(ffufFindings))
-			allFindings = append(allFindings, ffufFindings...)
+			log.Fatalf("[!] Aggressive recon failed: %v", err)
+		}
+
+	case *fullpower:
+		fmt.Println("[*] Mode: -F (fullpower ringan) -> subfinder + httpx (mc=200)")
+		var err error
+		nucleiInput, err = runLightRecon(rawTarget, *concurrency, *verbose)
+		if err != nil {
+			log.Fatalf("[!] Fullpower recon failed: %v", err)
+		}
+
+	case *tagsFilter != "":
+		fmt.Println("[*] Mode: --tags -> subfinder + httpx, nuclei dengan --tags")
+		var err error
+		nucleiInput, err = runLightRecon(rawTarget, *concurrency, *verbose)
+		if err != nil {
+			log.Fatalf("[!] Tags recon failed: %v", err)
+		}
+
+	default:
+		fmt.Println("[*] Mode: default -> subfinder + httpx (mc=200)")
+		var err error
+		nucleiInput, err = runLightRecon(rawTarget, *concurrency, *verbose)
+		if err != nil {
+			log.Fatalf("[!] Default recon failed: %v", err)
 		}
 	}
 
-	// Optional: filter findings by tags if --tags is provided
-	if *tagsFilter != "" {
-		stageBanner("STAGE 5: TAG FILTER")
-		requested := parseTagsFilter(*tagsFilter)
-		var filtered []core.Finding
-		for _, f := range allFindings {
-			if hasMatchingTag(f.Tags, requested) {
-				filtered = append(filtered, f)
-			}
+	if len(nucleiInput) == 0 {
+		log.Fatalf("[!] Recon produced no URLs for nuclei")
+	}
+
+	// STAGE 3: NUCLEI SCANNING
+	stageBanner("STAGE 3: NUCLEI SCANNING")
+
+	// Tentukan opsi nuclei berdasarkan mode
+	useSeverity := *fullpowerAggressive
+	// -fa: gunakan --severity medium,high,critical
+	// default / -F / --tags: tanpa --severity kecuali user atur via tags
+
+	if err := runNuclei(nucleiInput, *concurrency, *verbose, *tagsFilter, useSeverity, *output); err != nil {
+		log.Fatalf("[!] nuclei scan failed: %v", err)
+	}
+
+	// STAGE 4: Optional FFUF after nuclei (jika user minta, selain standalone)
+	if *fuzzing {
+		stageBanner("STAGE 4: FFUF FUZZING (-fuzzing)")
+		if err := core.RunFFUFStandalone(rawTarget, *concurrency, *verbose); err != nil {
+			log.Fatalf("[!] FFUF error: %v", err)
 		}
-		fmt.Printf("[*] Tag filter active: %v -> %d/%d findings kept\n", requested, len(filtered), len(allFindings))
-		allFindings = filtered
 	}
 
-	// Stage 6: REPORT
-	stageBanner("STAGE 6: REPORT")
-	fmt.Printf("[*] Total findings: %d\n", len(allFindings))
-
-	if err := core.SaveFindingsJSON(*output, allFindings); err != nil {
-		fmt.Printf("[!] Failed to save JSON report: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("[+] Scan complete. Results saved to %s\n", *output)
+	fmt.Println("[+] Done.")
 }
 
-// stageBanner prints a clean stage separator.
+// =========================
+// Helper: Stage banners
+// =========================
+
 func stageBanner(title string) {
 	fmt.Println()
 	fmt.Println("==================================================")
@@ -276,46 +197,276 @@ func stageBanner(title string) {
 	fmt.Println("==================================================")
 }
 
-// parseTagsFilter parses a comma-separated tags string into a normalized slice.
-func parseTagsFilter(raw string) []string {
-	parts := strings.Split(raw, ",")
+// =========================
+// Helper: binary check
+// =========================
+
+func hasBinary(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// =========================
+// Recon pipelines & helpers
+// =========================
+
+// runSubfinder runs:
+// verbose:   subfinder -d <domain>
+// non-verb:  subfinder -d <domain> -silent
+func runSubfinder(domain string, conc int, verbose bool) ([]string, error) {
+	if !hasBinary("subfinder") {
+		return nil, fmt.Errorf("subfinder not found")
+	}
+
+	args := []string{"-d", domain}
+	if !verbose {
+		args = append(args, "-silent")
+	}
+	if conc > 0 {
+		args = append(args, "-t", fmt.Sprintf("%d", conc))
+	}
+
+	if verbose {
+		fmt.Printf("[cmd] subfinder %s\n", strings.Join(args, " "))
+	}
+
+	cmd := exec.Command("subfinder", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("subfinder failed: %w", err)
+	}
+
+	lines := splitLines(string(out))
+	if verbose {
+		fmt.Printf("[subfinder] %d results\n", len(lines))
+	}
+	return lines, nil
+}
+
+// runHttpxFromList runs httpx with mc=200 on stdin list.
+func runHttpxFromList(input []string, conc int, verbose bool) ([]string, error) {
+	if !hasBinary("httpx") {
+		return nil, fmt.Errorf("httpx not found")
+	}
+	if len(input) == 0 {
+		return nil, nil
+	}
+
+	args := []string{"-mc", "200"}
+	if !verbose {
+		args = append(args, "-silent")
+	}
+	if conc > 0 {
+		args = append(args, "-t", fmt.Sprintf("%d", conc))
+	}
+
+	if verbose {
+		fmt.Printf("[cmd] httpx %s\n", strings.Join(args, " "))
+	}
+
+	cmd := exec.Command("httpx", args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("httpx stdin: %w", err)
+	}
+	outPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("httpx stdout: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("httpx start: %w", err)
+	}
+
+	go func() {
+		defer stdin.Close()
+		for _, l := range input {
+			l = strings.TrimSpace(l)
+			if l != "" {
+				_, _ = fmt.Fprintln(stdin, l)
+			}
+		}
+	}()
+
+	outBytes, err := io.ReadAll(outPipe)
+	if err != nil {
+		return nil, fmt.Errorf("httpx read: %w", err)
+	}
+
+	_ = cmd.Wait()
+
+	lines := splitLines(string(outBytes))
+	if verbose {
+		fmt.Printf("[httpx] %d results (mc=200)\n", len(lines))
+	}
+	return lines, nil
+}
+
+// runAggressiveRecon: subfinder -> httpx -> gau -> httpx
+func runAggressiveRecon(rawTarget string, conc int, verbose bool) ([]string, error) {
+	domain := extractDomain(rawTarget)
+	if domain == "" {
+		return nil, fmt.Errorf("unable to extract domain from %s", rawTarget)
+	}
+	// subfinder
+	subs, err := runSubfinder(domain, conc, verbose)
+	if err != nil || len(subs) == 0 {
+		return nil, fmt.Errorf("subfinder failed or empty")
+	}
+	// httpx on subs
+	live1, err := runHttpxFromList(subs, conc, verbose)
+	if err != nil || len(live1) == 0 {
+		return nil, fmt.Errorf("httpx(subfinder) failed or empty")
+	}
+	// gau on live1
+	gauURLs, err := runGauFromList(live1, conc, verbose)
+	if err != nil || len(gauURLs) == 0 {
+		return nil, fmt.Errorf("gau failed or empty")
+	}
+	// httpx on gauURLs
+	clean, err := runHttpxFromList(gauURLs, conc, verbose)
+	if err != nil || len(clean) == 0 {
+		return nil, fmt.Errorf("httpx(gau) failed or empty")
+	}
+	return clean, nil
+}
+
+// runLightRecon: subfinder -> httpx
+func runLightRecon(rawTarget string, conc int, verbose bool) ([]string, error) {
+	domain := extractDomain(rawTarget)
+	if domain == "" {
+		return nil, fmt.Errorf("unable to extract domain from %s", rawTarget)
+	}
+	subs, err := runSubfinder(domain, conc, verbose)
+	if err != nil || len(subs) == 0 {
+		return nil, fmt.Errorf("subfinder failed or empty")
+	}
+	live, err := runHttpxFromList(subs, conc, verbose)
+	if err != nil || len(live) == 0 {
+		return nil, fmt.Errorf("httpx(subfinder) failed or empty")
+	}
+	return live, nil
+}
+
+// runGauFromList: simple sequential gau over hosts list.
+func runGauFromList(hosts []string, conc int, verbose bool) ([]string, error) {
+	if !hasBinary("gau") {
+		return nil, fmt.Errorf("gau not found")
+	}
+	var outAll []string
+	for _, h := range hosts {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		args := []string{}
+		if conc > 0 {
+			args = append(args, fmt.Sprintf("--threads=%d", conc))
+		}
+		args = append(args, h)
+		if verbose {
+			fmt.Printf("[cmd] gau %s\n", strings.Join(args, " "))
+		}
+		cmd := exec.Command("gau", args...)
+		out, err := cmd.Output()
+		if err != nil {
+			if verbose {
+				fmt.Printf("[gau] error on %s: %v\n", h, err)
+			}
+			continue
+		}
+		lines := splitLines(string(out))
+		if verbose && len(lines) > 0 {
+			fmt.Printf("[gau] %s -> %d URLs\n", h, len(lines))
+		}
+		outAll = append(outAll, lines...)
+	}
+	return outAll, nil
+}
+
+// =========================
+// nuclei orchestration
+// =========================
+
+func runNuclei(urls []string, conc int, verbose bool, tags string, aggressive bool, output string) error {
+	if len(urls) == 0 {
+		return fmt.Errorf("no targets for nuclei")
+	}
+
+	// Tulis targets ke file sementara
+	tmpFile, err := os.CreateTemp("", "autohunt-nuclei-targets-*.txt")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	for _, u := range urls {
+		u = strings.TrimSpace(u)
+		if u != "" {
+			_, _ = tmpFile.WriteString(u + "\n")
+		}
+	}
+	_ = tmpFile.Close()
+
+	args := []string{
+		"-l", tmpFile.Name(),
+		"-c", fmt.Sprintf("%d", conc),
+		"-json",
+		"-o", output,
+	}
+
+	if aggressive {
+		args = append(args, "--severity", "medium,high,critical")
+	}
+	if tags != "" {
+		args = append(args, "-tags", tags)
+	}
+
+	if verbose {
+		fmt.Printf("[cmd] nuclei %s\n", strings.Join(args, " "))
+	}
+
+	cmd := exec.Command(moduleNuclei, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+// =========================
+// Utility helpers
+// =========================
+
+// splitLines converts a raw string into a slice of non-empty trimmed lines.
+func splitLines(s string) []string {
 	var out []string
-	for _, p := range parts {
-		p = strings.TrimSpace(strings.ToLower(p))
-		if p != "" {
-			out = append(out, p)
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
 		}
 	}
 	return out
 }
 
-// hasMatchingTag checks if any of the requested tags exist in the finding's tags.
-func hasMatchingTag(tags []string, requested []string) bool {
-	if len(requested) == 0 {
-		return true
+// extractDomain normalizes target to a domain for subfinder.
+func extractDomain(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
 	}
-	if len(tags) == 0 {
-		return false
+	// If it already looks like a bare domain.
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		return raw
 	}
-
-	tagSet := make(map[string]struct{}, len(tags))
-	for _, t := range tags {
-		tagSet[strings.ToLower(t)] = struct{}{}
+	// Strip scheme.
+	withoutScheme := raw
+	if i := strings.Index(withoutScheme, "://"); i != -1 {
+		withoutScheme = withoutScheme[i+3:]
 	}
-
-	for _, r := range requested {
-		if _, ok := tagSet[r]; ok {
-			return true
-		}
+	// Take up to first slash.
+	if i := strings.Index(withoutScheme, "/"); i != -1 {
+		withoutScheme = withoutScheme[:i]
 	}
-	return false
-}
-
-// runContextModuleWithBudget runs a ContextModule with respect to the global deadline.
-func runContextModuleWithBudget(mod core.ContextModule, ctx *core.ScanContext, globalDeadline time.Time, concurrency int) ([]core.Finding, error) {
-	remaining := time.Until(globalDeadline)
-	if remaining <= 0 {
-		return nil, fmt.Errorf("global timeout exceeded before module %s", mod.Name())
-	}
-	return mod.Run(ctx)
+	return strings.TrimSpace(withoutScheme)
 }
