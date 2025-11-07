@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"autohunt/internal/core"
@@ -33,6 +34,7 @@ func main() {
 	concurrency := flag.Int("c", 10, "Maximum concurrent HTTP operations (tuning: 5-50)")
 	verbose := flag.Bool("v", false, "Verbose output")
 	fuzzing := flag.Bool("fuzzing", false, "Run ffuf-based fuzzing after vulnerability scanning (requires ffuf in PATH and FUZZ URL)")
+	tagsFilter := flag.String("tags", "", "Comma-separated tags to filter findings in the final report (e.g. xss,sqli,lfi,sensitive(ffuf))")
 
 	// Full-power modes:
 	// --fullpower / -F  : mode maksimal yang menjalankan seluruh pipeline recon + modul vuln secara terstruktur.
@@ -240,8 +242,36 @@ func main() {
 		}
 	}
 
-	// Stage 5: Reporting
-	stageBanner("STAGE 5: REPORT")
+	// Optional: filter findings by tags if --tags is provided
+	if *tagsFilter != "" {
+		stageBanner("STAGE 5: TAG FILTER")
+		requested := parseTagsFilter(*tagsFilter)
+		var filtered []core.Finding
+		for _, f := range allFindings {
+			if hasMatchingTag(f.Tags, requested) {
+				filtered = append(filtered, f)
+			}
+		}
+		fmt.Printf("[*] Tag filter active: %v -> %d/%d findings kept\n", requested, len(filtered), len(allFindings))
+		allFindings = filtered
+	}
+
+	// Optional: filter findings by tags if --tags is provided
+	if *tagsFilter != "" {
+		stageBanner("STAGE 5: TAG FILTER")
+		requested := parseTagsFilter(*tagsFilter)
+		var filtered []core.Finding
+		for _, f := range allFindings {
+			if hasMatchingTag(f.Tags, requested) {
+				filtered = append(filtered, f)
+			}
+		}
+		fmt.Printf("[*] Tag filter active: %v -> %d/%d findings kept\n", requested, len(filtered), len(allFindings))
+		allFindings = filtered
+	}
+
+	// Stage 6: Reporting
+	stageBanner("STAGE 6: REPORT")
 	fmt.Printf("[*] Total findings: %d\n", len(allFindings))
 
 	if err := core.SaveFindingsJSON(*output, allFindings); err != nil {
@@ -258,6 +288,41 @@ func stageBanner(title string) {
 	fmt.Println("==================================================")
 	fmt.Println(title)
 	fmt.Println("==================================================")
+}
+
+// parseTagsFilter parses a comma-separated tags string into a normalized slice.
+func parseTagsFilter(raw string) []string {
+	parts := strings.Split(raw, ",")
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(strings.ToLower(p))
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// hasMatchingTag checks if any of the requested tags exist in the finding's tags.
+func hasMatchingTag(tags []string, requested []string) bool {
+	if len(requested) == 0 {
+		return true
+	}
+	if len(tags) == 0 {
+		return false
+	}
+
+	tagSet := make(map[string]struct{}, len(tags))
+	for _, t := range tags {
+		tagSet[strings.ToLower(t)] = struct{}{}
+	}
+
+	for _, r := range requested {
+		if _, ok := tagSet[r]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // runContextModuleWithBudget runs a ContextModule with respect to the global deadline.

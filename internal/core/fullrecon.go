@@ -381,45 +381,110 @@ func normalizeDomainForExternal(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
-// runSubfinder menjalankan subfinder -d domain -silent dan mengembalikan daftar subdomain.
+// runSubfinder menjalankan subfinder -d domain.
+// Perilaku:
+// - Jika verbose == true  -> tampilkan output asli subfinder (tanpa -silent).
+// - Jika verbose == false -> gunakan -silent, hanya kumpulkan hasil.
 func runSubfinder(domain string, concurrency int, verbose bool) []string {
 	if !binaryExists("subfinder") {
 		return nil
 	}
-	args := []string{"-d", domain, "-silent"}
+
+	var args []string
+	if verbose {
+		// Tampilkan output asli subfinder
+		args = []string{"-d", domain}
+	} else {
+		// Mode normal: hanya ambil hasil bersih
+		args = []string{"-d", domain, "-silent"}
+	}
 	if concurrency > 0 {
 		args = append(args, "-t", fmt.Sprintf("%d", concurrency))
 	}
+
 	cmd := exec.Command("subfinder", args...)
-	out, err := cmd.Output()
+
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		if verbose {
+			fmt.Printf("[subfinder] failed to get stdout: %v\n", err)
+		}
+		return nil
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		if verbose {
+			fmt.Printf("[subfinder] failed to get stderr: %v\n", err)
+		}
+		return nil
+	}
+
+	if err := cmd.Start(); err != nil {
 		if verbose {
 			fmt.Printf("[subfinder] error: %v\n", err)
 		}
 		return nil
 	}
+
 	var subs []string
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			subs = append(subs, line)
-		}
+
+	// Tampilkan stderr apa adanya jika verbose
+	if verbose {
+		go func() {
+			sc := bufio.NewScanner(stderr)
+			for sc.Scan() {
+				line := sc.Text()
+				if strings.TrimSpace(line) != "" {
+					fmt.Println(line)
+				}
+			}
+		}()
 	}
-	if verbose && len(subs) > 0 {
+
+	// Baca stdout dan kumpulkan subdomain
+	sc := bufio.NewScanner(stdout)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		if verbose {
+			// subfinder full output sudah termasuk banner/log/result,
+			// jadi langsung tampilkan apa adanya.
+			fmt.Println(line)
+		}
+		// tetap kumpulkan sebagai subdomain candidate
+		subs = append(subs, line)
+	}
+
+	_ = cmd.Wait()
+
+	if !verbose && len(subs) > 0 {
 		fmt.Printf("[subfinder] %d subdomains found\n", len(subs))
 	}
+
 	return subs
 }
 
 // runHttpxOnList menjalankan httpx pada list host/URL dan mengembalikan hasil live.
+// - Jika verbose: tampilkan output asli httpx (tanpa -silent).
+// - Jika tidak: gunakan -silent dan hanya parsing hasil.
 func runHttpxOnList(list []string, concurrency int, verbose bool) []string {
 	if !binaryExists("httpx") || len(list) == 0 {
 		return list
 	}
-	args := []string{"-silent", "-status-code", "-follow-redirects"}
+
+	var args []string
+	if verbose {
+		args = []string{"-status-code", "-follow-redirects"}
+	} else {
+		args = []string{"-silent", "-status-code", "-follow-redirects"}
+	}
 	if concurrency > 0 {
 		args = append(args, "-t", fmt.Sprintf("%d", concurrency))
 	}
+
 	cmd := exec.Command("httpx", args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -429,10 +494,16 @@ func runHttpxOnList(list []string, concurrency int, verbose bool) []string {
 	if err != nil {
 		return list
 	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return list
+	}
+
 	if err := cmd.Start(); err != nil {
 		return list
 	}
 
+	// kirim input list ke httpx
 	go func() {
 		defer stdin.Close()
 		for _, h := range list {
@@ -443,22 +514,44 @@ func runHttpxOnList(list []string, concurrency int, verbose bool) []string {
 	}()
 
 	var live []string
+
+	// jika verbose, tampilkan stderr apa adanya
+	if verbose {
+		go func() {
+			sc := bufio.NewScanner(stderr)
+			for sc.Scan() {
+				line := sc.Text()
+				if strings.TrimSpace(line) != "" {
+					fmt.Println(line)
+				}
+			}
+		}()
+	}
+
+	// baca stdout, tampilkan (verbose) dan simpan
 	sc := bufio.NewScanner(stdout)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if line != "" {
-			live = append(live, line)
+		if line == "" {
+			continue
 		}
+		if verbose {
+			fmt.Println(line)
+		}
+		live = append(live, line)
 	}
 	_ = cmd.Wait()
 
-	if verbose && len(live) > 0 {
+	if !verbose && len(live) > 0 {
 		fmt.Printf("[httpx] %d hosts/URLs alive\n", len(live))
 	}
+
 	return live
 }
 
 // runGauOnList menjalankan gau pada list host/URL dan mengembalikan URL gabungan.
+// - Jika verbose: tampilkan output asli gau untuk transparansi.
+// - Jika tidak: hanya parsing hasil (seperti sebelumnya).
 func runGauOnList(list []string, concurrency int, verbose bool) []string {
 	if !binaryExists("gau") || len(list) == 0 {
 		return nil
@@ -469,46 +562,97 @@ func runGauOnList(list []string, concurrency int, verbose bool) []string {
 		if base == "" {
 			continue
 		}
-		args := []string{base}
+		var args []string
 		if concurrency > 0 {
-			args = append([]string{fmt.Sprintf("--threads=%d", concurrency)}, args...)
+			args = append(args, fmt.Sprintf("--threads=%d", concurrency))
 		}
+		args = append(args, base)
+
 		cmd := exec.Command("gau", args...)
-		out, err := cmd.Output()
+		stdout, err := cmd.StdoutPipe()
 		if err != nil {
+			if verbose {
+				fmt.Printf("[gau] failed stdout on %s: %v\n", base, err)
+			}
+			continue
+		}
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			if verbose {
+				fmt.Printf("[gau] failed stderr on %s: %v\n", base, err)
+			}
+			continue
+		}
+
+		if err := cmd.Start(); err != nil {
 			if verbose {
 				fmt.Printf("[gau] error on %s: %v\n", base, err)
 			}
 			continue
 		}
-		for _, line := range strings.Split(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				urls = append(urls, line)
-			}
+
+		// tampilkan stderr jika verbose
+		if verbose {
+			go func() {
+				sc := bufio.NewScanner(stderr)
+				for sc.Scan() {
+					line := sc.Text()
+					if strings.TrimSpace(line) != "" {
+						fmt.Printf("[gau][err] %s\n", line)
+					}
+				}
+			}()
 		}
+
+		// baca stdout
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			if verbose {
+				fmt.Printf("[gau][out] %s\n", line)
+			}
+			urls = append(urls, line)
+		}
+
+		_ = cmd.Wait()
 	}
-	if verbose && len(urls) > 0 {
+	if !verbose && len(urls) > 0 {
 		fmt.Printf("[gau] collected %d URLs from live hosts\n", len(urls))
 	}
 	return urls
 }
 
 // runHttpxOnListWithMC menjalankan httpx dengan -mc filter untuk URL final.
+// - Jika verbose: tampilkan output asli httpx (tanpa -silent).
+// - Jika tidak: gunakan -silent dan hanya parsing hasil.
 func runHttpxOnListWithMC(list []string, concurrency int, verbose bool) []string {
 	if !binaryExists("httpx") || len(list) == 0 {
 		return list
 	}
-	args := []string{"-silent", "-status-code", "-follow-redirects", "-mc", "200,204,301,302,307,401,403"}
+
+	var args []string
+	if verbose {
+		args = []string{"-status-code", "-follow-redirects", "-mc", "200,204,301,302,307,401,403"}
+	} else {
+		args = []string{"-silent", "-status-code", "-follow-redirects", "-mc", "200,204,301,302,307,401,403"}
+	}
 	if concurrency > 0 {
 		args = append(args, "-t", fmt.Sprintf("%d", concurrency))
 	}
+
 	cmd := exec.Command("httpx", args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return list
 	}
 	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return list
+	}
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return list
 	}
@@ -526,16 +670,35 @@ func runHttpxOnListWithMC(list []string, concurrency int, verbose bool) []string
 	}()
 
 	var clean []string
+
+	// jika verbose, tampilkan stderr httpx
+	if verbose {
+		go func() {
+			sc := bufio.NewScanner(stderr)
+			for sc.Scan() {
+				line := sc.Text()
+				if strings.TrimSpace(line) != "" {
+					fmt.Println(line)
+				}
+			}
+		}()
+	}
+
+	// baca stdout, tampilkan jika verbose dan simpan
 	sc := bufio.NewScanner(stdout)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if line != "" {
-			clean = append(clean, line)
+		if line == "" {
+			continue
 		}
+		if verbose {
+			fmt.Println(line)
+		}
+		clean = append(clean, line)
 	}
 	_ = cmd.Wait()
 
-	if verbose && len(clean) > 0 {
+	if !verbose && len(clean) > 0 {
 		fmt.Printf("[httpx] %d URLs after mc filter\n", len(clean))
 	}
 	return clean
