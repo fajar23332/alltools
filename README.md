@@ -1,5 +1,5 @@
 
-### autohunt
+### AUTOHUNT
 
 `autohunt` adalah automated recon & vulnerability scanner yang dirancang untuk alur bug bounty modern:
 
@@ -96,7 +96,7 @@ Opsional (untuk “fullpower” ekstra):
 Clone repo (nanti setelah kamu upload):
 
 ```bash
-git clone https://github.com/<username>/autohunt.git
+git clone https://github.com/D0Lv-1N/BUGx.git
 cd autohunt
 go build -o autohunt ./cmd/autohunt
 ```
