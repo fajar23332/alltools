@@ -1,7 +1,5 @@
 
-
-```project/autohunt/README.md#L1-260
-# autohunt
+### autohunt
 
 `autohunt` adalah automated recon & vulnerability scanner yang dirancang untuk alur bug bounty modern:
 
