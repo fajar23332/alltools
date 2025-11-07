@@ -411,7 +411,6 @@ func runNuclei(urls []string, conc int, verbose bool, tags string, aggressive bo
 	args := []string{
 		"-l", tmpFile.Name(),
 		"-c", fmt.Sprintf("%d", conc),
-		"-json",
 		"-o", output,
 	}
 
