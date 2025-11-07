@@ -270,7 +270,21 @@ func main() {
 		allFindings = filtered
 	}
 
-	// Stage 6: Reporting
+	// Optional: filter findings by tags if --tags is provided
+	if *tagsFilter != "" {
+		stageBanner("STAGE 5: TAG FILTER")
+		requested := parseTagsFilter(*tagsFilter)
+		var filtered []core.Finding
+		for _, f := range allFindings {
+			if hasMatchingTag(f.Tags, requested) {
+				filtered = append(filtered, f)
+			}
+		}
+		fmt.Printf("[*] Tag filter active: %v -> %d/%d findings kept\n", requested, len(filtered), len(allFindings))
+		allFindings = filtered
+	}
+
+	// Stage 6: REPORT
 	stageBanner("STAGE 6: REPORT")
 	fmt.Printf("[*] Total findings: %d\n", len(allFindings))
 
