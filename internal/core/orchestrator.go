@@ -315,7 +315,8 @@ func RunNucleiFromContext(ctx *ScanContext, concurrency int, verbose bool, tags 
 
 // RunFFUFStandalone:
 //   - Mode -fuzzing standalone:
-//     ffuf -u <target/FUZZ> -w wordlists/dirs_common.txt -mc 200 -r -t <c> (-v jika verbose).
+//     ffuf -u https://stripchat.com/FUZZ -w wordlists/dirs_common.txt -t 9999 -v -r -c -mc 200,302,301,307,401,403,405
+//   - Implementasi disesuaikan agar selalu menggunakan kombinasi flag di atas untuk target yang diberikan.
 func RunFFUFStandalone(rawTarget string, concurrency int, verbose bool) error {
 	if rawTarget == "" {
 		return fmt.Errorf("no target provided for ffuf")
@@ -324,7 +325,7 @@ func RunFFUFStandalone(rawTarget string, concurrency int, verbose bool) error {
 		return fmt.Errorf("ffuf binary not found in PATH")
 	}
 
-	// pastikan FUZZ
+	// pastikan target memiliki FUZZ
 	targetURL := rawTarget
 	if !strings.Contains(targetURL, "FUZZ") {
 		if strings.HasSuffix(targetURL, "/") {
@@ -339,18 +340,20 @@ func RunFFUFStandalone(rawTarget string, concurrency int, verbose bool) error {
 		return fmt.Errorf("ffuf wordlist not found: %s", ffufWordlistRelative)
 	}
 
+	// Override concurrency ke 9999 sesuai permintaan untuk mode -fuzzing ini.
+	threads := 9999
+
 	args := []string{
 		"-u", targetURL,
 		"-w", wordlist,
-		"-mc", "200",
+		"-t", fmt.Sprintf("%d", threads),
+		"-v",
 		"-r",
-		"-t", fmt.Sprintf("%d", safeConcurrency(concurrency)),
+		"-c",
+		"-mc", "200,302,301,307,401,403,405",
 	}
 
-	if verbose {
-		args = append(args, "-v")
-		fmt.Printf("[ffuf] running: ffuf %s\n", strings.Join(args, " "))
-	}
+	fmt.Printf("[ffuf] running: ffuf %s\n", strings.Join(args, " "))
 
 	cmd := exec.Command("ffuf", args...)
 	cmd.Stdout = os.Stdout
