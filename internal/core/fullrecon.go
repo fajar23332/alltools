@@ -383,8 +383,8 @@ func normalizeDomainForExternal(raw string) string {
 
 // runSubfinder menjalankan subfinder -d domain.
 // Perilaku:
-// - Jika verbose == true  -> tampilkan output asli subfinder (tanpa -silent).
-// - Jika verbose == false -> gunakan -silent, hanya kumpulkan hasil.
+// - Mengumpulkan subdomain dari subfinder (verbose: output penuh, non-verbose: -silent).
+// - Lalu, jika httpx tersedia, mem-filter hasil melalui httpx dengan -mc 200 (hanya host HTTP 200).
 func runSubfinder(domain string, concurrency int, verbose bool) []string {
 	if !binaryExists("subfinder") {
 		return nil
@@ -464,10 +464,22 @@ func runSubfinder(domain string, concurrency int, verbose bool) []string {
 		fmt.Printf("[subfinder] %d subdomains found\n", len(subs))
 	}
 
-	return subs
+	// Setelah mendapatkan subdomains, jika httpx tersedia, filter dengan -mc 200
+	if len(subs) == 0 || !binaryExists("httpx") {
+		return subs
+	}
+
+	filtered := runHttpxOnList(subs, concurrency, verbose)
+	if !verbose && len(filtered) > 0 {
+		fmt.Printf("[subfinder] %d subdomains with HTTP 200\n", len(filtered))
+	}
+	return filtered
 }
 
-// runHttpxOnList menjalankan httpx pada list host/URL dan mengembalikan hasil live.
+// runHttpxOnList menjalankan httpx pada list host/URL dan mengembalikan hasil dengan status 200 saja.
+// - Selalu menggunakan -mc 200 untuk memastikan konsistensi filtering.
+// runHttpxOnList menjalankan httpx pada list host/URL dan mengembalikan hasil dengan status 200 saja.
+// - Selalu menggunakan -mc 200 (baik verbose maupun non-verbose) untuk konsistensi.
 // - Jika verbose: tampilkan output asli httpx (tanpa -silent).
 // - Jika tidak: gunakan -silent dan hanya parsing hasil.
 func runHttpxOnList(list []string, concurrency int, verbose bool) []string {
@@ -477,10 +489,10 @@ func runHttpxOnList(list []string, concurrency int, verbose bool) []string {
 
 	var args []string
 	if verbose {
-		// Live output: jangan pakai -silent, tapi tetap gunakan -status-code dan -mc 200
+		// Live output: jangan pakai -silent, gunakan -status-code dan -mc 200
 		args = []string{"-status-code", "-follow-redirects", "-mc", "200"}
 	} else {
-		// Non-verbose: tetap sunyi, tapi pastikan hanya status 200 yang digunakan sebagai sumber
+		// Non-verbose: tetap sunyi, gunakan -silent dan -mc 200
 		args = []string{"-silent", "-status-code", "-follow-redirects", "-mc", "200"}
 	}
 	if concurrency > 0 {
@@ -628,6 +640,7 @@ func runGauOnList(list []string, concurrency int, verbose bool) []string {
 }
 
 // runHttpxOnListWithMC menjalankan httpx dengan -mc filter untuk URL final.
+// - Diubah untuk konsisten hanya menerima status 200 (sesuai requirement).
 // - Jika verbose: tampilkan output asli httpx (tanpa -silent).
 // - Jika tidak: gunakan -silent dan hanya parsing hasil.
 func runHttpxOnListWithMC(list []string, concurrency int, verbose bool) []string {
@@ -635,13 +648,12 @@ func runHttpxOnListWithMC(list []string, concurrency int, verbose bool) []string
 		return list
 	}
 
-	// Untuk filter final, tetap gunakan range status penting (200,204,301,302,307,401,403).
-	// Ini sudah termasuk 200 dan digunakan khusus pada tahap akhir.
+	// Untuk filter final, kini hanya gunakan status 200 agar konsisten.
 	var args []string
 	if verbose {
-		args = []string{"-status-code", "-follow-redirects", "-mc", "200,204,301,302,307,401,403"}
+		args = []string{"-status-code", "-follow-redirects", "-mc", "200"}
 	} else {
-		args = []string{"-silent", "-status-code", "-follow-redirects", "-mc", "200,204,301,302,307,401,403"}
+		args = []string{"-silent", "-status-code", "-follow-redirects", "-mc", "200"}
 	}
 	if concurrency > 0 {
 		args = append(args, "-t", fmt.Sprintf("%d", concurrency))

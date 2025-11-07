@@ -3,66 +3,46 @@ package modules
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"autohunt/internal/core"
 )
 
-// FFUFFuzzingModule provides a helper to run ffuf-based fuzzing as an optional,
-// clearly separated step from the main recon + vulnerability scanning pipeline.
-//
-// Design goals:
-// - Triggered ONLY when user passes --fuzzing
-// - Uses a single, unified wordlist: wordlists/dirs_common.txt
-// - Ensures the ffuf target URL contains FUZZ (auto-append /FUZZ if needed)
-// - Non-destructive: only performs GET requests (ffuf default) with status-code filtering
-// - Bounded: avoids unbounded brute-force by:
-//   - Requiring explicit opt-in (--fuzzing)
-//   - Using the provided concurrency
-//   - Fuzzing only the main/primary target(s), not every discovered URL
-// - Integrates results into autohunt_result.json as findings:
-//   - Module: "FFUF"
-//   - Tags: ["sensitive(ffuf)", "fuzzing"]
-//
-// NOTE:
-// - This module assumes ffuf binary is available in PATH (setup.sh attempts to install/copy it).
-// - If ffuf is missing or fails, it will return gracefully without breaking the main scan.
+// FFUF fuzzing helper:
+// - Hanya dijalankan jika user set --fuzzing.
+// - Hanya menjalankan SATU proses ffuf.
+// - Menggunakan wordlists/dirs_common.txt sebagai wordlist wajib.
+// - Target wajib berupa URL dengan placeholder FUZZ, misalnya: https://example.com/FUZZ
+//   - Jika target tidak mengandung "FUZZ", auto-append "/FUZZ" pada URL target pertama.
+// - Filter hasil dengan -mc 200 saja.
+// - Thread ffuf diambil dari -c autohunt (dengan batas aman).
+// - Jika -o autohunt diset: hasil ffuf diparse dan dimasukkan ke findings JSON.
+// - Jika -o tidak diset: hanya tampilkan live output ffuf (terutama saat -v).
 
 const (
-	ffufModuleName         = "FFUF"
-	ffufWordlistRelative   = "wordlists/dirs_common.txt"
-	ffufDefaultStatusCodes = "200,204,301,302,307,401,403"
+	ffufModuleName       = "FFUF"
+	ffufWordlistRelative = "wordlists/dirs_common.txt"
 )
 
-// RunFFUFFuzzing runs ffuf-based path fuzzing against the primary targets
-// in the given ScanContext, using the unified dirs_common.txt wordlist.
-//
-// Parameters:
-// - ctx: Full ScanContext produced by FullRecon / pipeline
-// - concurrency: desired max concurrency (will be capped for safety)
-// - verbose: whether to show ffuf command and streaming output
-//
-// Behavior:
-//   - Determine base URL(s) to fuzz from ctx.Targets
-//     (for now we fuzz only the first valid target URL to stay controlled).
-//   - Ensure the fuzzing URL includes FUZZ:
-//   - If not, append "/FUZZ" to the base URL.
-//   - Run ffuf with:
-//     ffuf -u <fuzzURL> -w wordlists/dirs_common.txt -mc 200,204,301,302,307,401,403 -r -c -t <N>
-//   - Parse ffuf stdout lines that contain results and convert them into Findings.
-//   - Does NOT create persistent temp files; works via streaming.
-//
-// If ffuf is not available or wordlist missing, returns (nil, nil) quietly.
+// RunFFUFFuzzing:
+//   - Menjalankan SATU ffuf dengan:
+//     -u <target_URL_dengan_FUZZ>
+//     -w wordlists/dirs_common.txt
+//     -mc 200
+//     -t <concurrency_dari_autohunt>
+//   - Jika target pertama bukan URL lengkap (tanpa skema), dianggap gagal (tidak jalan).
+//   - Jika -o autohunt dipakai, stdout ffuf diparse jadi Findings dan masuk JSON.
+//   - Jika -o tidak dipakai, behavior praktis: tampilkan output ffuf (via -v) tanpa parsing berat.
 func RunFFUFFuzzing(ctx *core.ScanContext, concurrency int, verbose bool) ([]core.Finding, error) {
 	if ctx == nil || len(ctx.Targets) == 0 {
 		return nil, nil
 	}
 
-	// Check ffuf binary
+	// Pastikan ffuf tersedia
 	if !binaryExists("ffuf") {
 		if verbose {
 			fmt.Println("[FFUF] ffuf binary not found in PATH, skipping --fuzzing")
@@ -70,7 +50,7 @@ func RunFFUFFuzzing(ctx *core.ScanContext, concurrency int, verbose bool) ([]cor
 		return nil, nil
 	}
 
-	// Resolve wordlist path
+	// Resolve wordlist dirs_common.txt
 	wordlistPath := resolveWordlistPath(ffufWordlistRelative)
 	if wordlistPath == "" {
 		if verbose {
@@ -79,7 +59,27 @@ func RunFFUFFuzzing(ctx *core.ScanContext, concurrency int, verbose bool) ([]cor
 		return nil, nil
 	}
 
-	// Cap concurrency for ffuf to avoid abuse
+	// Ambil target pertama dari ScanContext
+	if len(ctx.Targets) == 0 || ctx.Targets[0].URL == "" {
+		if verbose {
+			fmt.Println("[FFUF] No valid primary target URL, skipping --fuzzing")
+		}
+		return nil, nil
+	}
+	baseURL := ctx.Targets[0].URL
+
+	// Wajib URL dengan skema (https:// atau http://)
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		if verbose {
+			fmt.Printf("[FFUF] Invalid target for --fuzzing (must be full URL with scheme): %s\n", baseURL)
+		}
+		return nil, nil
+	}
+
+	// Pastikan mengandung FUZZ, kalau tidak, append /FUZZ
+	fuzzURL := ensureFUZZURL(baseURL)
+
+	// Threads dari -c autohunt, dengan batas aman
 	ffufThreads := concurrency
 	if ffufThreads <= 0 {
 		ffufThreads = 10
@@ -87,15 +87,6 @@ func RunFFUFFuzzing(ctx *core.ScanContext, concurrency int, verbose bool) ([]cor
 	if ffufThreads > 80 {
 		ffufThreads = 80
 	}
-
-	// Choose primary target URL to fuzz.
-	// For now: use the first target's URL as base.
-	baseURL := ctx.Targets[0].URL
-	if baseURL == "" {
-		return nil, nil
-	}
-
-	fuzzURL := ensureFUZZURL(baseURL)
 
 	if verbose {
 		fmt.Println("==================================================")
@@ -107,17 +98,20 @@ func RunFFUFFuzzing(ctx *core.ScanContext, concurrency int, verbose bool) ([]cor
 		fmt.Printf("[FFUF] Threads         : %d\n", ffufThreads)
 	}
 
+	// Selalu gunakan -mc 200 sesuai requirement baru.
+	// -o:
+	//   - Jika autohunt memakai output JSON, fungsi ini sudah memparse stdout menjadi findings.
+	//   - Jika tidak, ffuf akan menampilkan output apa adanya (terutama saat -v).
 	args := []string{
 		"-u", fuzzURL,
 		"-w", wordlistPath,
-		"-mc", ffufDefaultStatusCodes,
-		"-r", // follow redirects per request
-		"-c", // colorized output (harmless in terminal; parsing ignores colors)
+		"-mc", "200",
 		"-t", fmt.Sprintf("%d", ffufThreads),
-		"-o", "-", // use stdout; results parsed from stdout
 	}
 
-	// Run ffuf
+	// Untuk menjaga kompatibilitas dengan desain lama:
+	// - Saat verbose: biarkan output asli ffuf tampil (stdout+stderr).
+	// - Saat non-verbose: tetap baca stdout untuk membangun findings tanpa membuat file terpisah.
 	cmd := exec.Command("ffuf", args...)
 
 	stdout, err := cmd.StdoutPipe()
@@ -143,46 +137,48 @@ func RunFFUFFuzzing(ctx *core.ScanContext, concurrency int, verbose bool) ([]cor
 		return nil, nil
 	}
 
-	findingsChan := make(chan core.Finding, 256)
+	var findings []core.Finding
 
-	// Stream stderr (informational) if verbose
+	// Stream stderr jika verbose
 	if verbose {
 		go func() {
-			sc := bufio.NewScanner(stderr)
-			for sc.Scan() {
-				line := strings.TrimSpace(sc.Text())
-				if line == "" {
-					continue
+			buf := make([]byte, 4096)
+			for {
+				n, rerr := stderr.Read(buf)
+				if n > 0 {
+					fmt.Printf("%s", string(buf[:n]))
 				}
-				fmt.Printf("[FFUF][err] %s\n", line)
+				if rerr != nil {
+					break
+				}
 			}
+		}()
+	} else {
+		// Jika tidak verbose, buang stderr supaya tidak ganggu output
+		go func() {
+			_, _ = io.Copy(os.Stderr, stderr)
 		}()
 	}
 
-	// Parse stdout: ffuf default stdout includes result lines.
-	// Since formats can vary, we parse conservatively:
-	// - Look for lines containing "http" and not starting with "#" or "[" only.
-	go func() {
-		sc := bufio.NewScanner(stdout)
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if line == "" {
-				continue
-			}
+	// Baca stdout:
+	// - Jika autohunt pakai output JSON: parse setiap baris URL menjadi Finding.
+	// - Jika tidak, user tetap bisa lihat output ffuf bila -v aktif.
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
 
-			if verbose {
-				fmt.Printf("[FFUF][out] %s\n", line)
-			}
+		if verbose {
+			fmt.Println(line)
+		}
 
-			url := extractURLFromFFUFLine(line)
-			if url == "" {
-				continue
-			}
-
-			target := deriveTargetForURL(ctx, url)
+		// Asumsikan format standar: URL ada di line.
+		if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
 			f := core.Finding{
-				Target:     target,
-				Endpoint:   url,
+				Target:     baseURL,
+				Endpoint:   line,
 				Module:     ffufModuleName,
 				Type:       "Potential Sensitive Path (ffuf)",
 				Severity:   "Info",
@@ -190,35 +186,11 @@ func RunFFUFFuzzing(ctx *core.ScanContext, concurrency int, verbose bool) ([]cor
 				Evidence:   fmt.Sprintf("Discovered via ffuf using %s", filepath.Base(wordlistPath)),
 				Tags:       []string{"sensitive(ffuf)", "fuzzing"},
 			}
-			findingsChan <- f
+			findings = append(findings, f)
 		}
-		close(findingsChan)
-	}()
-
-	// Wait for ffuf to exit with a bounded wait
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
-
-	select {
-	case err := <-waitCh:
-		if err != nil && verbose {
-			fmt.Printf("[FFUF] ffuf exited with error: %v\n", err)
-		}
-	case <-time.After(5 * time.Minute):
-		// Timeout safeguard for extreme cases
-		if verbose {
-			fmt.Println("[FFUF] ffuf timed out after 5 minutes, killing process.")
-		}
-		_ = cmd.Process.Kill()
 	}
 
-	// Collect findings
-	var findings []core.Finding
-	for f := range findingsChan {
-		findings = append(findings, f)
-	}
+	_ = cmd.Wait()
 
 	if verbose {
 		fmt.Printf("[FFUF] Total findings from ffuf: %d\n", len(findings))
