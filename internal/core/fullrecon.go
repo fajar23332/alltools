@@ -477,9 +477,11 @@ func runHttpxOnList(list []string, concurrency int, verbose bool) []string {
 
 	var args []string
 	if verbose {
-		args = []string{"-status-code", "-follow-redirects"}
+		// Live output: jangan pakai -silent, tapi tetap gunakan -status-code dan -mc 200
+		args = []string{"-status-code", "-follow-redirects", "-mc", "200"}
 	} else {
-		args = []string{"-silent", "-status-code", "-follow-redirects"}
+		// Non-verbose: tetap sunyi, tapi pastikan hanya status 200 yang digunakan sebagai sumber
+		args = []string{"-silent", "-status-code", "-follow-redirects", "-mc", "200"}
 	}
 	if concurrency > 0 {
 		args = append(args, "-t", fmt.Sprintf("%d", concurrency))
@@ -633,6 +635,8 @@ func runHttpxOnListWithMC(list []string, concurrency int, verbose bool) []string
 		return list
 	}
 
+	// Untuk filter final, tetap gunakan range status penting (200,204,301,302,307,401,403).
+	// Ini sudah termasuk 200 dan digunakan khusus pada tahap akhir.
 	var args []string
 	if verbose {
 		args = []string{"-status-code", "-follow-redirects", "-mc", "200,204,301,302,307,401,403"}

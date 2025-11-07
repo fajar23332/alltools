@@ -4,6 +4,7 @@ Tujuan file ini:
 - Memberi konteks JELAS untuk sesi selanjutnya (termasuk AI lain) tentang desain autohunt.
 - Menjelaskan apa yang SUDAH dibuat, apa yang TIDAK boleh diubah, dan apa yang BOLEH dikembangkan.
 - Menghindari kesalahan desain ulang yang merusak arsitektur yang sudah disepakati.
+- Menjelaskan perbedaan antara binary lokal (./autohunt) dan binary global (autohunt di PATH) agar tidak terjadi kebingungan versi.
 
 ==================================================
 1. OVERVIEW KONSEP AUTOhunt
@@ -215,13 +216,23 @@ Pada saat file ini dibuat:
 
 - setup.sh:
   - Build + install autohunt.
+  - Untuk binary global:
+    - Jika dijalankan dengan hak yang cukup, menyalin binary ke `/usr/bin/autohunt` atau lokasi PATH global lain.
   - Install tools eksternal (gau, waybackurls, subfinder, httpx, ffuf) jika Go tersedia.
   - Membuat konfigurasi default `~/.gau.toml`.
-  - Tidak lagi membuat wordlists.
+  - Tidak lagi membuat wordlists (wordlists hanya dari repository).
 
 - File sementara:
   - Tidak ada file proses seperti subs.txt/httpx.txt/clean.txt yang ditinggal.
   - Semua pipeline utilitas menggunakan streaming dan objek in-memory.
+- Versi binary:
+  - `./autohunt` (dari direktori repo):
+    - Selalu menggunakan kode terbaru setelah `go build -o autohunt ./cmd/autohunt`.
+  - `autohunt` (tanpa ./):
+    - Mengacu ke binary global di PATH (misalnya `/usr/bin/autohunt`).
+    - Harus di-update manual (misalnya dengan `sudo cp autohunt /usr/bin/autohunt`) setiap kali ada perubahan baru.
+  - Penting:
+    - Jika output `autohunt -h` dan `./autohunt -h` berbeda, berarti binary global belum di-update ke versi terbaru.
 
 ==================================================
 6. SARAN UNTUK PENGEMBANGAN LANJUT
@@ -245,6 +256,71 @@ Selalu:
   - 1 flag = 1 perilaku jelas,
   - Output tetap JSON yang mudah diproses,
   - Tidak ada aksi yang melanggar aturan bug bounty.
+
+==================================================
+7. ARAH PROJECT SELANJUTNYA (MENUJU ORKESTRATOR GAYA "GAU"-STYLE)
+==================================================
+
+Tujuan jangka berikutnya:
+- Membuat autohunt menjadi orchestrator recon & vuln yang:
+  - Memanfaatkan maksimal tools eksternal (subfinder, httpx, gau, ffuf, nuclei, dll) secara terstruktur.
+  - Tetap mempertahankan:
+    - Satu binary utama.
+    - Satu output JSON final.
+    - Tidak ada file sampah.
+    - Mode aman secara default.
+
+Rekomendasi roadmap (yang MASUK AKAL dan SEHARUSNYA dilakukan):
+
+1) Stabilkan pipeline -fa:
+   - Pastikan:
+     - subfinder → httpx → gau → httpx → LiveURLs sudah robust:
+       - Tambah handling timeout / retry.
+       - Batasi threads untuk menghindari "signal: killed".
+   - Logging:
+     - -v: full live output (seperti sekarang sudah diarahkan).
+     - non-verbose: ringkasan bersih.
+
+2) Sempurnakan tagging & --tags:
+   - Pastikan setiap modul mengisi `tags` konsisten:
+     - xss, sqli, lfi, ssrf, open-redirect, sensitive, sensitive(ffuf), dll.
+   - --tags:
+     - Hanya filter OUTPUT (bukan mematikan modul).
+     - Menjadi cara resmi menggantikan gf-style grep manual.
+
+3) Tingkatkan modul vuln:
+   - XSS:
+     - Tambah context awareness (parameter & refleksi).
+   - SQLi:
+     - Tambah pattern DB lain (tanpa blind/time-based agresif).
+   - LFI:
+     - Tambah file target aman lain (log/config), tetap read-only.
+   - Open Redirect:
+     - Lebih banyak variasi param dan skenario.
+   - SSRF:
+     - Tambah heuristik yang tidak butuh out-of-band infra.
+
+4) Integrasi nuclei (opsional, via flag terpisah):
+   - BUKAN default.
+   - Hanya jika user mengaktifkan, dan binary + templates tersedia.
+   - Hasil nuclei digabung sebagai module terpisah dengan tags spesifik.
+
+5) Hardening & UX:
+   - Tambah:
+     - --raw-urls:
+       - Opsional untuk dump URL hasil recon bagi user yang mau manual tools lain (gf, dalfox, dll).
+     - --safe:
+       - Mode lebih ringan dari -F (tanpa payload agresif).
+     - --deep:
+       - Di antara -F dan -fa.
+
+6) Dokumentasi:
+   - README + penjelasan.txt harus selalu:
+     - Disinkronkan.
+     - Menjelaskan dengan jujur:
+       - Apa yang dilakukan.
+       - Apa yang tidak dilakukan.
+       - Bagaimana menggabungkannya dengan ekosistem bug bounty lainnya.
 
 ==================================================
 END
