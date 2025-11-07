@@ -1,0 +1,6 @@
+autohunt
+autohunt.exe
+autohunt_result.json
+*.log
+*.out
+.DS_Store

@@ -111,24 +111,74 @@ func FullReconWithConcurrency(targets []Target, useExternal bool, verbose bool, 
 
 // runURLCollector tries external tools like gau/waybackurls.
 func runURLCollector(tool string, t Target, verbose bool) ([]string, bool) {
+	// Contoh:
+	//   gau https://target.com
+	//   waybackurls https://target.com
 	cmd := exec.Command(tool, t.URL)
-	out, err := cmd.StdoutPipe()
+
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, false
-	}
-	if err := cmd.Start(); err != nil {
+		if verbose {
+			fmt.Printf("[!] Failed to attach stdout for %s: %v\n", tool, err)
+		}
 		return nil, false
 	}
 
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		if verbose {
+			fmt.Printf("[!] Failed to attach stderr for %s: %v\n", tool, err)
+		}
+		return nil, false
+	}
+
+	if err := cmd.Start(); err != nil {
+		if verbose {
+			fmt.Printf("[!] Failed to start %s for %s: %v\n", tool, t.URL, err)
+		}
+		return nil, false
+	}
+
+	if verbose {
+		fmt.Printf("[ext:%s] started for %s\n", tool, t.URL)
+	}
+
 	var urls []string
-	sc := bufio.NewScanner(out)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line != "" {
+
+	// Scanner untuk STDOUT
+	stdoutScanner := bufio.NewScanner(stdout)
+	go func() {
+		for stdoutScanner.Scan() {
+			line := strings.TrimSpace(stdoutScanner.Text())
+			if line == "" {
+				continue
+			}
+			if verbose {
+				// Tampilkan live output tool eksternal
+				fmt.Printf("[ext:%s][out] %s\n", tool, line)
+			}
 			urls = append(urls, line)
 		}
+	}()
+
+	// Scanner untuk STDERR
+	if verbose {
+		go func() {
+			errScanner := bufio.NewScanner(stderr)
+			for errScanner.Scan() {
+				line := strings.TrimSpace(errScanner.Text())
+				if line == "" {
+					continue
+				}
+				// Tampilkan live error/warning dari tool eksternal
+				fmt.Printf("[ext:%s][err] %s\n", tool, line)
+			}
+		}()
 	}
-	cmd.Wait()
+
+	if err := cmd.Wait(); err != nil && verbose {
+		fmt.Printf("[ext:%s] exited with error: %v\n", tool, err)
+	}
 
 	if verbose && len(urls) > 0 {
 		fmt.Printf("    [%s] collected %d URLs\n", tool, len(urls))
