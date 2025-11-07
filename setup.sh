@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# setup.sh - Installer untuk autohunt + tools eksternal + wordlists/payloads
+# setup.sh - Installer untuk autohunt + tools eksternal
 #
 # Fitur:
 # - Build binary autohunt dari source (Go)
@@ -10,17 +10,13 @@
 #     - subfinder
 #     - httpx
 #     - ffuf
-# - Download dan setup wordlist/payload fuzzing terkurasi (berbasis SecLists, tidak full):
-#     - Wordlist direktori & file sensitif
-#     - Wordlist endpoint umum
-#     - Payload XSS umum dan efektif
 # - Copy binary ke /usr/bin (atau /data/data/com.termux/files/usr/bin untuk Termux)
 #
 # Catatan:
 # - Wajib dijalankan dengan hak yang cukup untuk menulis ke direktori bin sistem:
 #     - Linux/macOS: gunakan sudo jika perlu
 # - Script ini mencoba deteksi environment (Linux/macOS/Termux).
-# - Tools eksternal & wordlists hanya diinstall jika memungkinkan.
+# - Setup TIDAK membuat/mengubah wordlist. Wordlist dibaca langsung dari repository (git clone).
 #
 # Penggunaan:
 #   chmod +x setup.sh
@@ -147,6 +143,8 @@ install_go_tool() {
   if go install "${pkg}@latest"; then
     if command -v "$bin_name" >/dev/null 2>&1; then
       log_ok "'$bin_name' berhasil diinstall dan tersedia di PATH."
+      # Jika binary ditemukan di PATH, coba juga copy ke /usr/bin atau /usr/local/bin untuk global access
+      copy_external_to_usrbin "$bin_name"
       return 0
     fi
 
@@ -157,6 +155,10 @@ install_go_tool() {
       log_warn "'$bin_name' terinstall di $gopath/bin tetapi belum ada di PATH."
       log_warn "Tambahkan ke PATH, contoh:"
       log_warn "  export PATH=\"\$PATH:$gopath/bin\""
+      # Tetap coba copy ke /usr/bin atau /usr/local/bin agar bisa dipanggil dari mana saja
+      if [ -x "$gopath/bin/$bin_name" ]; then
+        copy_external_to_usrbin "$bin_name" "$gopath/bin/$bin_name"
+      fi
       return 0
     fi
 
@@ -165,6 +167,42 @@ install_go_tool() {
     log_warn "Gagal go install '$pkg'."
     return 1
   fi
+}
+
+copy_external_to_usrbin() {
+  # $1 = binary name (mis. gau)
+  # $2 = full path ke binary (opsional, jika tidak ada akan dicari via command -v)
+  local name="$1"
+  local src="${2:-}"
+
+  # Cari src jika belum diberikan
+  if [ -z "$src" ]; then
+    src="$(command -v "$name" 2>/dev/null || true)"
+  fi
+
+  if [ -z "$src" ] || [ ! -x "$src" ]; then
+    return 1
+  fi
+
+  # Tentukan target global
+  local dest=""
+  if [ -w /usr/bin ] || [ "$(id -u)" -eq 0 ]; then
+    dest="/usr/bin/$name"
+  elif [ -w /usr/local/bin ] || [ "$(id -u)" -eq 0 ]; then
+    dest="/usr/local/bin/$name"
+  fi
+
+  if [ -n "$dest" ]; then
+    if cp "$src" "$dest" 2>/dev/null; then
+      chmod +x "$dest" || true
+      log_ok "Tool eksternal '$name' dicopy ke $dest"
+      return 0
+    else
+      log_warn "Gagal copy '$name' ke $dest. Jalankan setup.sh dengan sudo jika ingin global install."
+    fi
+  fi
+
+  return 1
 }
 
 install_external_tools() {
@@ -324,6 +362,34 @@ EOF
 
 main() {
   log_info "Menjalankan setup autohunt..."
+  # Buat konfigurasi default untuk gau jika belum ada (~/.gau.toml)
+  GAU_CONFIG="$HOME/.gau.toml"
+  if [ ! -f "$GAU_CONFIG" ]; then
+    cat > "$GAU_CONFIG" << 'EOF'
+threads = 2
+verbose = false
+retries = 15
+subdomains = false
+parameters = false
+providers = ["wayback","commoncrawl","otx","urlscan"]
+blacklist = ["ttf","woff","svg","png","jpg"]
+json = false
+
+[urlscan]
+  apikey = ""
+
+[filters]
+  from = ""
+  to = ""
+  matchstatuscodes = []
+  matchmimetypes = []
+  filterstatuscodes = []
+  filtermimetypes = ["image/png", "image/jpg", "image/svg+xml"]
+EOF
+    log_ok "Konfigurasi default gau dibuat di $GAU_CONFIG"
+  else
+    log_info "Konfigurasi gau sudah ada di $GAU_CONFIG, tidak diubah."
+  fi
 
   if ! ensure_go; then
     log_error "Go wajib terinstall untuk build autohunt. Setup dihentikan."

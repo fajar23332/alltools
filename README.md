@@ -194,13 +194,10 @@ chmod +x setup.sh
 - Menginstall ke lokasi global yang sesuai:
   - Linux/macOS: /usr/bin atau /usr/local/bin
   - Termux: $PREFIX/bin
-- Mencoba install tools eksternal:
-  - gau, waybackurls, subfinder, httpx, ffuf (jika Go tersedia).
-- Membuat wordlists:
-  - `wordlists/dirs_common.txt`
-  - `wordlists/params_common.txt`
-  - `wordlists/xss_payloads.txt`
-  - `wordlists/ssrf_targets.txt`
+- Mencoba install tools eksternal (jika Go tersedia) dan menyalinnya ke PATH global jika memungkinkan:
+  - `gau`, `waybackurls`, `subfinder`, `httpx`, `ffuf`.
+- TIDAK membuat/mengubah wordlists.
+  - Wordlists dibaca langsung dari repository (`wordlists/`).
 
 Jika `setup.sh` gagal copy ke /usr/bin karena permission:
 - Ikuti instruksi yang muncul (gunakan sudo atau jalankan dari direktori repo).

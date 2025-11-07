@@ -1,0 +1,251 @@
+# autohunt/penjelasan.txt
+
+Tujuan file ini:
+- Memberi konteks JELAS untuk sesi selanjutnya (termasuk AI lain) tentang desain autohunt.
+- Menjelaskan apa yang SUDAH dibuat, apa yang TIDAK boleh diubah, dan apa yang BOLEH dikembangkan.
+- Menghindari kesalahan desain ulang yang merusak arsitektur yang sudah disepakati.
+
+==================================================
+1. OVERVIEW KONSEP AUTOhunt
+==================================================
+
+autohunt adalah:
+
+- Orchestrator automated recon + vulnerability scanning untuk bug bounty.
+- Fokus:
+  - Satu input target => pipeline lengkap => output JSON terstruktur.
+  - Memanfaatkan internal engine + tools eksternal bila tersedia.
+  - Menjaga etika: non-destructive, tidak DoS, respect rules.
+- Tiga fitur utama:
+  1) Mode fullpower terstruktur (-F / --fullpower)
+  2) Mode fullpower-aggressive (-fa / --fullpower-aggressive)
+  3) Mode optional ffuf fuzzing (--fuzzing)
+
+Output utama:
+- HANYA file JSON dari flag `-o` (default: autohunt_result.json).
+- Tidak boleh ada file proses sementara (subs.txt, httpx.txt, clean.txt, dsb) yang tertinggal.
+
+==================================================
+2. MODE DAN FLAG YANG HARUS DIPAHAMI
+==================================================
+
+[1] -F / --fullpower (DEFAULT TRUE)
+
+- Mode fullpower terstruktur (ringan).
+- Pipeline:
+  - FullReconWithConcurrency:
+    - Recon basic.
+    - Internal crawler.
+    - Static paths umum.
+    - Optional gau (jika ada).
+    - Live filter internal.
+    - ClassifyParams => Buckets (SQLi/XSS/LFI/Redirect/SSRF).
+  - Jalankan semua ContextModule vuln:
+    - Sensitive files, Dir listing, Security headers, CORS.
+    - XSS reflected (bucket-based).
+    - SQLi error-based.
+    - LFI basic.
+    - Open Redirect.
+    - SSRF heuristik.
+    - CVE fingerprint hints.
+- Cocok untuk:
+  - Penggunaan regular di scope yang legal.
+- Harus dipertahankan sebagai:
+  - Mode kuat tapi tidak terlalu brutal.
+
+[2] -fa / --fullpower-aggressive
+
+- Mode AGRESSIVE (wajib di VPS / mesin kuat).
+- Otomatis:
+  - Memaksa `--fullpower` aktif.
+  - Jika -c tidak di-set, concurrency default naik (mis: 40).
+  - `ScanContext.Aggressive = true`.
+- Pipeline AGGRESSIVE:
+  - Coba jalankan (jika tools ada):
+    - subfinder => dapat subdomain.
+    - httpx (hasil subfinder) => host/URL live.
+    - gau (hasil httpx) => URLs historis.
+    - httpx filter (hasil gau) => URL final (mc 200,204,301,302,307,401,403).
+  - Jika gagal / tool tidak ada:
+    - fallback ke mekanisme internal:
+      - crawler + static paths + gau + internal live filter.
+  - Hasil akhir:
+    - `ScanContext.LiveURLs` berisi URL yang sudah disaring agresif.
+    - `ScanContext.Buckets` diisi untuk SQLi/XSS/LFI/Redirect/SSRF.
+
+- Modul vuln di -fa:
+  - Boleh lebih agresif (TAPI terkontrol):
+    - SensitiveFiles:
+      - Boleh pakai `wordlists/dirs_common.txt` dengan LIMIT.
+    - XSSReflect:
+      - Boleh pakai beberapa payload ekstra dari `xss_payloads.txt`.
+    - SSRF:
+      - Boleh pakai `ssrf_targets.txt` tambahan.
+  - Tetap:
+    - Non-destructive (GET/cek aman).
+    - Batas concurrency dan jumlah percobaan.
+
+- Prinsip:
+  - -fa = orchestrator agresif (subfinder + httpx + gau + filter).
+  - Tidak menyimpan file txt, hanya memori.
+  - Fallback aman jika tools tidak ada.
+
+[3] --fuzzing
+
+- Opsional, dipakai bersamaan dengan -F atau -fa.
+- Tujuan:
+  - Menjalankan ffuf path fuzzing TERPISAH dari pipeline utama.
+- Perilaku (current design):
+  - Hanya jalan jika:
+    - flag `--fuzzing` aktif,
+    - ffuf tersedia di PATH,
+    - wordlists/dirs_common.txt ada.
+  - Target:
+    - Diambil dari target utama (`ScanContext.Targets[0].URL`).
+    - Jika URL tidak mengandung `FUZZ`, otomatis append `/FUZZ`.
+  - ffuf:
+    - Menggunakan `wordlists/dirs_common.txt`.
+    - Status code filter: 200,204,301,302,307,401,403.
+    - Concurrency disesuaikan dengan `-c` (dengan cap aman).
+  - Setiap URL valid dari ffuf:
+    - Ditambahkan ke findings sebagai:
+      - module: "FFUF"
+      - type: "Potential Sensitive Path (ffuf)"
+      - tags: ["sensitive(ffuf)", "fuzzing"].
+- Sangat penting:
+  - ffuf tidak mengganggu pipeline utama.
+  - ffuf tidak membuat file sampah (semua via stdout parsing).
+
+==================================================
+3. APA YANG TIDAK BOLEH DILAKUKAN
+==================================================
+
+Untuk AI berikutnya / kontributor:
+
+1) JANGAN:
+- Menyimpan file proses statis:
+  - subs.txt
+  - httpx.txt
+  - gau.txt
+  - clean.txt
+  - dan sejenisnya.
+- Kalau butuh file sementara:
+  - Gunakan mekanisme temp dan hapus sebelum program selesai.
+  - Namun prefer streaming in-memory (stdin/stdout) seperti sudah didesain.
+
+2) JANGAN:
+- Mengubah default behavior sehingga:
+  - -F atau -fa melakukan aksi destructive:
+    - POST berbahaya,
+    - file upload,
+    - spam form,
+    - RCE payload, dll.
+- Mengklaim 100% akurasi atau coverage semua bug.
+- Menghapus atau mematikan mekanisme fallback:
+  - Jika tools eksternal tidak ada, pipeline internal harus tetap jalan.
+
+3) JANGAN:
+- Menghasilkan banyak output file lain selain:
+  - JSON hasil scan (flag -o).
+- Mencampur wordlists XSS / SSRF ke scanner path ffuf sembarangan:
+  - dirs_common.txt untuk path.
+  - xss_payloads.txt untuk XSS module.
+  - ssrf_targets.txt untuk SSRF module.
+
+==================================================
+4. APA YANG HARUS DIPERTAHANKAN
+==================================================
+
+1) Struktur utama:
+- `ScanContext` sebagai pusat:
+  - Targets
+  - Recon
+  - URLPool
+  - LiveURLs
+  - Buckets
+  - ExternalUsed
+  - Concurrency
+  - Aggressive
+
+2) Mode:
+- `-F`:
+  - Full recon internal + modul vuln lengkap.
+- `-fa`:
+  - Full recon + eksternal pipeline (subfinder/httpx/gau/httpx jika ada) + aggressive modules.
+- `--fuzzing`:
+  - ffuf opsional setelah vuln scanning.
+
+3) Integrasi tools eksternal:
+- HANYA dipanggil jika binary tersedia di PATH.
+- Aman dari sisi error:
+  - Kalau tool fail → fallback internal.
+- Tidak memaksa user punya semua tools.
+
+4) Wordlists:
+- Disediakan melalui repo:
+  - `wordlists/dirs_common.txt`
+  - `wordlists/xss_payloads.txt`
+  - `wordlists/ssrf_targets.txt`
+  - `wordlists/params_common.txt`
+- setup.sh TIDAK membuat/mengedit wordlists.
+- Modul membaca wordlists sesuai perannya.
+
+==================================================
+5. STATUS TERKINI (RINGKAS)
+==================================================
+
+Pada saat file ini dibuat:
+
+- -F:
+  - Sudah berfungsi sebagai fullpower terstruktur.
+
+- -fa:
+  - Sudah menjalankan:
+    - FullReconWithConcurrency dengan dukungan agresif.
+    - Mencoba pipeline subfinder → httpx → gau → httpx jika tools tersedia.
+    - Jatuh ke internal recon jika tools eksternal tidak ada.
+  - Menandai `Aggressive = true` untuk modul yang mendukung.
+
+- --fuzzing:
+  - Sudah terdaftar di CLI.
+  - Terhubung ke `RunFFUFFuzzing`:
+    - Menggunakan ffuf + dirs_common.txt + FUZZ.
+    - Menambahkan hasil ke findings JSON.
+  - Hanya aktif jika user set flag ini.
+
+- setup.sh:
+  - Build + install autohunt.
+  - Install tools eksternal (gau, waybackurls, subfinder, httpx, ffuf) jika Go tersedia.
+  - Membuat konfigurasi default `~/.gau.toml`.
+  - Tidak lagi membuat wordlists.
+
+- File sementara:
+  - Tidak ada file proses seperti subs.txt/httpx.txt/clean.txt yang ditinggal.
+  - Semua pipeline utilitas menggunakan streaming dan objek in-memory.
+
+==================================================
+6. SARAN UNTUK PENGEMBANGAN LANJUT
+==================================================
+
+Jika ingin memperkuat autohunt:
+
+- Tambah scoring / ranking:
+  - Urutkan temuan berdasarkan severity + confidence.
+- Tambah modul spesifik:
+  - WordPress hardening check,
+  - Panel admin detector,
+  - Integrasi nuclei (opsional, via flag terpisah).
+- Tambah opsi:
+  - Mode "safe" (lebih ringan dari -F),
+  - Mode "deep" (antara -F dan -fa).
+
+Selalu:
+- Dokumentasikan perubahan di README.
+- Jaga supaya:
+  - 1 flag = 1 perilaku jelas,
+  - Output tetap JSON yang mudah diproses,
+  - Tidak ada aksi yang melanggar aturan bug bounty.
+
+==================================================
+END
+==================================================

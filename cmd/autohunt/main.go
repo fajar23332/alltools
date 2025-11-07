@@ -16,12 +16,13 @@ import (
 // 1) Target initialization
 // 2) FullRecon:
 //    - Basic HTTP recon
-//    - URL pool (crawler + static paths + optional external tools like gau/waybackurls)
-//    - Live URL filter (httpx-style)
+//    - URL pool (crawler + static paths + optional external tools / historical sources)
+//    - Live URL filter (httpx-style / internal)
 //    - Param classification into buckets (gf-style)
 // 3) Vulnerability scanning:
 //    - Modules operate on ScanContext (buckets + targets + recon)
-// 4) Reporting
+// 4) Optional FFUF fuzzing (--fuzzing)
+// 5) Reporting
 
 func main() {
 	// CLI flags
@@ -31,6 +32,7 @@ func main() {
 	timeout := flag.Int("timeout", 900, "Max scan time in seconds (global)")
 	concurrency := flag.Int("c", 10, "Maximum concurrent HTTP operations (tuning: 5-50)")
 	verbose := flag.Bool("v", false, "Verbose output")
+	fuzzing := flag.Bool("fuzzing", false, "Run ffuf-based fuzzing after vulnerability scanning (requires ffuf in PATH and FUZZ URL)")
 
 	// Full-power modes:
 	// --fullpower / -F  : mode maksimal yang menjalankan seluruh pipeline recon + modul vuln secara terstruktur.
@@ -220,8 +222,26 @@ func main() {
 		}
 	}
 
-	// Stage 4: Reporting
-	stageBanner("STAGE 4: REPORT")
+	// Optional: FFUF-based fuzzing (separate from main recon/vuln pipeline)
+	// Hanya dijalankan jika user menambahkan --fuzzing.
+	// Perilaku:
+	// - Menggunakan ffuf (jika tersedia di PATH)
+	// - Target URL otomatis dipastikan mengandung FUZZ (append /FUZZ jika belum ada)
+	// - Menggunakan wordlists/dirs_common.txt sebagai wordlist utama
+	// - Menambah temuan ke allFindings sebagai Module="FFUF" dengan tag "sensitive(ffuf)"
+	if *fuzzing {
+		stageBanner("STAGE 4: FFUF FUZZING (--fuzzing)")
+		ffufFindings, err := modules.RunFFUFFuzzing(scanCtx, *concurrency, *verbose)
+		if err != nil {
+			fmt.Printf("[!] FFUF fuzzing error: %v\n", err)
+		} else {
+			fmt.Printf("[*] FFUF findings: %d\n", len(ffufFindings))
+			allFindings = append(allFindings, ffufFindings...)
+		}
+	}
+
+	// Stage 5: Reporting
+	stageBanner("STAGE 5: REPORT")
 	fmt.Printf("[*] Total findings: %d\n", len(allFindings))
 
 	if err := core.SaveFindingsJSON(*output, allFindings); err != nil {

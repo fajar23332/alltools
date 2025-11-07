@@ -251,7 +251,7 @@ func (m *XSSReflectContextModule) httpGetBody(u string) (string, error) {
 }
 
 // deriveTargetForURL maps a concrete URL back to a logical target base from ScanContext.
-// This helper is defined once centrally for XSS/SQLi/LFI/OpenRedirect/SSRF context usage.
+// Shared helper used by multiple modules (XSS/SQLi/LFI/OpenRedirect/SSRF/FFUF).
 func deriveTargetForURL(ctx *core.ScanContext, raw string) string {
 	if ctx == nil {
 		return raw

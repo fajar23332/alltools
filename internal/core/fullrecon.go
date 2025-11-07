@@ -33,35 +33,84 @@ func FullReconWithConcurrency(targets []Target, useExternal bool, verbose bool, 
 	}
 
 	// 1) Basic recon (concurrent)
+	//    Tetap dilakukan untuk mendapatkan fingerprint dasar.
 	ctx.Recon = ReconBasicWithConcurrency(targets, concurrency)
 
-	// 2) URL pool collection (gunakan Aggressive flag untuk atur kedalaman)
+	// 2) URL pool collection
+	// Untuk mode agresif (ScanContext.Aggressive akan di-set oleh caller setelah ini),
+	// kita mencoba menjalankan pipeline eksternal:
+	//
+	// subfinder -d target -> httpx (live hosts) -> gau (URLs) -> httpx filter (final URLs)
+	//
+	// Jika tool eksternal tidak tersedia atau gagal, fallback ke mekanisme internal
+	// (crawler + static paths + optional gau) seperti sebelumnya.
 	pool := map[string]struct{}{}
 
-	// Batas dasar untuk jumlah endpoint per target
+	// Batas dasar untuk jumlah endpoint per target (fallback / non-eksternal)
 	baseCrawlLimit := 60
 	baseStaticPaths := []string{"/", "/login", "/admin", "/search", "/api", "/dashboard"}
 
+	// Jika useExternal true dan alat tersedia, coba pipeline agresif:
+	// subfinder -> httpx -> gau -> httpx
+	if useExternal && len(targets) == 1 && binaryExists("subfinder") && binaryExists("httpx") {
+		t := targets[0]
+		domain := normalizeDomainForExternal(t.URL)
+
+		if domain != "" {
+			if verbose {
+				fmt.Printf("[*] [fa] Using external aggressive pipeline for %s\n", domain)
+			}
+
+			// 2.1 subfinder -d domain -silent
+			subs := runSubfinder(domain, concurrency, verbose)
+
+			// 2.2 httpx on subfinder output (live hosts/URLs)
+			liveFromSubs := runHttpxOnList(subs, concurrency, verbose)
+
+			// 2.3 gau on live hosts/URLs (historical URLs)
+			gauURLs := runGauOnList(liveFromSubs, concurrency, verbose)
+
+			// 2.4 httpx filter on gau URLs (final clean URLs)
+			clean := runHttpxOnListWithMC(gauURLs, concurrency, verbose)
+
+			for _, u := range clean {
+				pool[u] = struct{}{}
+			}
+
+			// Tandai alat eksternal yang digunakan
+			if len(subs) > 0 {
+				ctx.ExternalUsed = append(ctx.ExternalUsed, "subfinder")
+			}
+			if len(liveFromSubs) > 0 {
+				ctx.ExternalUsed = append(ctx.ExternalUsed, "httpx")
+			}
+			if len(gauURLs) > 0 && binaryExists("gau") {
+				ctx.ExternalUsed = append(ctx.ExternalUsed, "gau")
+			}
+
+			// Jika pipeline eksternal menghasilkan URL, lanjut ke filter & buckets
+			// tanpa fallback internal yang berat.
+			if len(pool) > 0 {
+				goto BUILD_LIVE_FROM_POOL
+			}
+		}
+	}
+
+	// Fallback: mekanisme internal (dipakai jika pipeline eksternal tidak tersedia/berhasil)
 	for _, t := range targets {
 		limit := baseCrawlLimit
 		paths := append([]string{}, baseStaticPaths...)
 
-		// Jika Aggressive diaktifkan oleh caller, perluas cakupan secara terkontrol:
-		// - Tambah limit crawl
-		// - Tambah beberapa static paths umum
-		// Catatan: ctx.Aggressive akan di-set oleh pemanggil segera setelah FullRecon selesai.
 		if concurrency >= 30 {
 			limit = baseCrawlLimit * 3
 		} else if concurrency >= 20 {
 			limit = baseCrawlLimit * 2
 		}
 
-		// Crawl internal dengan limit yang sudah ditentukan
 		for _, ep := range CrawlBasicWithConcurrency(t, limit, concurrency) {
 			pool[ep.URL] = struct{}{}
 		}
 
-		// Jika mode agresif, tambahkan beberapa path umum ekstra
 		if concurrency >= 30 {
 			paths = append(paths,
 				"/admin/login",
@@ -82,16 +131,13 @@ func FullReconWithConcurrency(targets []Target, useExternal bool, verbose bool, 
 			pool[u] = struct{}{}
 		}
 
-		if useExternal {
-			// waybackurls / gau style
-			for _, ext := range []string{"gau", "waybackurls"} {
-				urls, used := runURLCollector(ext, t, verbose)
-				if used {
-					ctx.ExternalUsed = append(ctx.ExternalUsed, ext)
-				}
-				for _, u := range urls {
-					pool[u] = struct{}{}
-				}
+		if useExternal && binaryExists("gau") {
+			urls, used := runURLCollector("gau", t, verbose)
+			if used {
+				ctx.ExternalUsed = append(ctx.ExternalUsed, "gau")
+			}
+			for _, u := range urls {
+				pool[u] = struct{}{}
 			}
 		}
 	}
@@ -100,10 +146,11 @@ func FullReconWithConcurrency(targets []Target, useExternal bool, verbose bool, 
 		ctx.URLPool = append(ctx.URLPool, u)
 	}
 
+BUILD_LIVE_FROM_POOL:
 	// 3) Live filter (httpx-like, concurrent)
 	ctx.LiveURLs = filterLiveConcurrent(ctx.URLPool, concurrency)
 
-	// 4) Classify parameters (gf-like)
+	// 4) Classify parameters (gf-style)
 	ctx.Buckets = ClassifyParams(ctx.LiveURLs)
 
 	return ctx
@@ -312,4 +359,184 @@ func containsAny(s string, parts []string) bool {
 		}
 	}
 	return false
+}
+
+// ===== Aggressive external helpers for -fa pipeline =====
+
+// binaryExists checks if a binary is available in PATH.
+func binaryExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// normalizeDomainForExternal mengekstrak domain dari target URL untuk subfinder/gau.
+func normalizeDomainForExternal(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if u.Host != "" {
+		return u.Host
+	}
+	return strings.TrimSpace(raw)
+}
+
+// runSubfinder menjalankan subfinder -d domain -silent dan mengembalikan daftar subdomain.
+func runSubfinder(domain string, concurrency int, verbose bool) []string {
+	if !binaryExists("subfinder") {
+		return nil
+	}
+	args := []string{"-d", domain, "-silent"}
+	if concurrency > 0 {
+		args = append(args, "-t", fmt.Sprintf("%d", concurrency))
+	}
+	cmd := exec.Command("subfinder", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		if verbose {
+			fmt.Printf("[subfinder] error: %v\n", err)
+		}
+		return nil
+	}
+	var subs []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			subs = append(subs, line)
+		}
+	}
+	if verbose && len(subs) > 0 {
+		fmt.Printf("[subfinder] %d subdomains found\n", len(subs))
+	}
+	return subs
+}
+
+// runHttpxOnList menjalankan httpx pada list host/URL dan mengembalikan hasil live.
+func runHttpxOnList(list []string, concurrency int, verbose bool) []string {
+	if !binaryExists("httpx") || len(list) == 0 {
+		return list
+	}
+	args := []string{"-silent", "-status-code", "-follow-redirects"}
+	if concurrency > 0 {
+		args = append(args, "-t", fmt.Sprintf("%d", concurrency))
+	}
+	cmd := exec.Command("httpx", args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return list
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return list
+	}
+	if err := cmd.Start(); err != nil {
+		return list
+	}
+
+	go func() {
+		defer stdin.Close()
+		for _, h := range list {
+			if strings.TrimSpace(h) != "" {
+				fmt.Fprintln(stdin, h)
+			}
+		}
+	}()
+
+	var live []string
+	sc := bufio.NewScanner(stdout)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" {
+			live = append(live, line)
+		}
+	}
+	_ = cmd.Wait()
+
+	if verbose && len(live) > 0 {
+		fmt.Printf("[httpx] %d hosts/URLs alive\n", len(live))
+	}
+	return live
+}
+
+// runGauOnList menjalankan gau pada list host/URL dan mengembalikan URL gabungan.
+func runGauOnList(list []string, concurrency int, verbose bool) []string {
+	if !binaryExists("gau") || len(list) == 0 {
+		return nil
+	}
+	var urls []string
+	for _, base := range list {
+		base = strings.TrimSpace(base)
+		if base == "" {
+			continue
+		}
+		args := []string{base}
+		if concurrency > 0 {
+			args = append([]string{fmt.Sprintf("--threads=%d", concurrency)}, args...)
+		}
+		cmd := exec.Command("gau", args...)
+		out, err := cmd.Output()
+		if err != nil {
+			if verbose {
+				fmt.Printf("[gau] error on %s: %v\n", base, err)
+			}
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				urls = append(urls, line)
+			}
+		}
+	}
+	if verbose && len(urls) > 0 {
+		fmt.Printf("[gau] collected %d URLs from live hosts\n", len(urls))
+	}
+	return urls
+}
+
+// runHttpxOnListWithMC menjalankan httpx dengan -mc filter untuk URL final.
+func runHttpxOnListWithMC(list []string, concurrency int, verbose bool) []string {
+	if !binaryExists("httpx") || len(list) == 0 {
+		return list
+	}
+	args := []string{"-silent", "-status-code", "-follow-redirects", "-mc", "200,204,301,302,307,401,403"}
+	if concurrency > 0 {
+		args = append(args, "-t", fmt.Sprintf("%d", concurrency))
+	}
+	cmd := exec.Command("httpx", args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return list
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return list
+	}
+	if err := cmd.Start(); err != nil {
+		return list
+	}
+
+	go func() {
+		defer stdin.Close()
+		for _, u := range list {
+			if strings.TrimSpace(u) != "" {
+				fmt.Fprintln(stdin, u)
+			}
+		}
+	}()
+
+	var clean []string
+	sc := bufio.NewScanner(stdout)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" {
+			clean = append(clean, line)
+		}
+	}
+	_ = cmd.Wait()
+
+	if verbose && len(clean) > 0 {
+		fmt.Printf("[httpx] %d URLs after mc filter\n", len(clean))
+	}
+	return clean
 }
