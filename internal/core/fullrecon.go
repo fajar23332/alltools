@@ -5,23 +5,23 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
 
-// FullRecon builds a ScanContext (sequential wrapper).
-// Prefer FullReconWithConcurrency for better performance.
+// FullRecon builds a ScanContext (legacy helper, no longer used in new external-only design).
+// Kept for compatibility; internally memanggil FullReconWithConcurrency.
 func FullRecon(targets []Target, useExternal bool, verbose bool) *ScanContext {
 	return FullReconWithConcurrency(targets, useExternal, verbose, 10)
 }
 
-// FullReconWithConcurrency builds a ScanContext with a bounded worker pool:
-// - Runs basic recon (concurrent)
-// - Collects URLs (internal + optional external tools)
-// - Filters live URLs (httpx-like) concurrently
-// - Classifies parameters into buckets (gf-like)
+// FullReconWithConcurrency (legacy) - tidak lagi dipakai sebagai path utama,
+// tapi dibiarkan untuk kompatibilitas. Pipeline baru menggunakan helper
+// RunDefaultRecon / RunLightExternalRecon / RunAggressiveExternalRecon.
 func FullReconWithConcurrency(targets []Target, useExternal bool, verbose bool, concurrency int) *ScanContext {
 	if concurrency < 1 {
 		concurrency = 1
@@ -37,61 +37,62 @@ func FullReconWithConcurrency(targets []Target, useExternal bool, verbose bool, 
 	ctx.Recon = ReconBasicWithConcurrency(targets, concurrency)
 
 	// 2) URL pool collection
-	// Untuk mode agresif (ScanContext.Aggressive akan di-set oleh caller setelah ini),
-	// kita mencoba menjalankan pipeline eksternal:
-	//
-	// subfinder -d target -> httpx (live hosts) -> gau (URLs) -> httpx filter (final URLs)
-	//
-	// Jika tool eksternal tidak tersedia atau gagal, fallback ke mekanisme internal
-	// (crawler + static paths + optional gau) seperti sebelumnya.
+	// Untuk mode agresif (-fa), kita gunakan pipeline eksternal dengan file sementara:
+	//   subfinder -d <domain> -t <c> [-silent] -o subs.txt
+	//   httpx -l subs.txt -t <c> -mc 200 [-silent] -o httpx.txt
+	//   cat httpx.txt | gau --threads <c> > gau.txt
+	//   httpx -l gau.txt -t <c> -mc 200 [-silent] -o clean.txt
+	// Semua file disimpan di direktori temporary dan dihapus setelah selesai.
+	// Jika tool eksternal tidak tersedia / gagal, fallback ke mekanisme internal
+	// (crawler + static paths + optional gau in-memory) seperti sebelumnya.
 	pool := map[string]struct{}{}
 
 	// Batas dasar untuk jumlah endpoint per target (fallback / non-eksternal)
 	baseCrawlLimit := 60
 	baseStaticPaths := []string{"/", "/login", "/admin", "/search", "/api", "/dashboard"}
 
-	// Jika useExternal true dan alat tersedia, coba pipeline agresif:
-	// subfinder -> httpx -> gau -> httpx
-	if useExternal && len(targets) == 1 && binaryExists("subfinder") && binaryExists("httpx") {
+	// Jika useExternal true, target tunggal, dan alat tersedia, coba pipeline agresif temp-file.
+	// Pipeline ini hanya dijalankan ketika context agresif diaktifkan oleh caller (-fa).
+	if useExternal && len(targets) == 1 && binaryExists("subfinder") && binaryExists("httpx") && binaryExists("gau") && ctx.IsAggressive() {
 		t := targets[0]
 		domain := normalizeDomainForExternal(t.URL)
 
 		if domain != "" {
 			if verbose {
-				fmt.Printf("[*] [fa] Using external aggressive pipeline for %s\n", domain)
+				fmt.Printf("[*] [fa] Using external aggressive pipeline (temp files) for %s\n", domain)
 			}
 
-			// 2.1 subfinder -d domain -silent
-			subs := runSubfinder(domain, concurrency, verbose)
+			clean, counts, err := runAggressivePipelineWithTempFiles(domain, concurrency, verbose)
+			if err == nil && len(clean) > 0 {
+				for _, u := range clean {
+					pool[u] = struct{}{}
+				}
 
-			// 2.2 httpx on subfinder output (live hosts/URLs)
-			liveFromSubs := runHttpxOnList(subs, concurrency, verbose)
+				if counts.subs > 0 {
+					ctx.ExternalUsed = append(ctx.ExternalUsed, "subfinder")
+				}
+				if counts.httpx1 > 0 || counts.httpx2 > 0 {
+					ctx.ExternalUsed = append(ctx.ExternalUsed, "httpx")
+				}
+				if counts.gau > 0 {
+					ctx.ExternalUsed = append(ctx.ExternalUsed, "gau")
+				}
 
-			// 2.3 gau on live hosts/URLs (historical URLs)
-			gauURLs := runGauOnList(liveFromSubs, concurrency, verbose)
+				if verbose {
+					fmt.Printf("[fa] Summary: subfinder=%d, httpx(subs)=%d, gau=%d, httpx(gau clean)=%d\n",
+						counts.subs, counts.httpx1, counts.gau, counts.httpx2)
+				} else {
+					fmt.Printf("[fa] External pipeline summary: subfinder=%d, httpx(subs)=%d, gau=%d, httpx(clean)=%d\n",
+						counts.subs, counts.httpx1, counts.gau, counts.httpx2)
+				}
 
-			// 2.4 httpx filter on gau URLs (final clean URLs)
-			clean := runHttpxOnListWithMC(gauURLs, concurrency, verbose)
-
-			for _, u := range clean {
-				pool[u] = struct{}{}
-			}
-
-			// Tandai alat eksternal yang digunakan
-			if len(subs) > 0 {
-				ctx.ExternalUsed = append(ctx.ExternalUsed, "subfinder")
-			}
-			if len(liveFromSubs) > 0 {
-				ctx.ExternalUsed = append(ctx.ExternalUsed, "httpx")
-			}
-			if len(gauURLs) > 0 && binaryExists("gau") {
-				ctx.ExternalUsed = append(ctx.ExternalUsed, "gau")
-			}
-
-			// Jika pipeline eksternal menghasilkan URL, lanjut ke filter & buckets
-			// tanpa fallback internal yang berat.
-			if len(pool) > 0 {
-				goto BUILD_LIVE_FROM_POOL
+				// Jika pipeline eksternal menghasilkan URL, lanjut ke filter & buckets
+				// tanpa fallback internal yang berat.
+				if len(pool) > 0 {
+					goto BUILD_LIVE_FROM_POOL
+				}
+			} else if verbose && err != nil {
+				fmt.Printf("[fa] External aggressive pipeline failed: %v (falling back to internal)\n", err)
 			}
 		}
 	}
@@ -131,15 +132,20 @@ func FullReconWithConcurrency(targets []Target, useExternal bool, verbose bool, 
 			pool[u] = struct{}{}
 		}
 
-		if useExternal && binaryExists("gau") {
-			urls, used := runURLCollector("gau", t, verbose)
-			if used {
-				ctx.ExternalUsed = append(ctx.ExternalUsed, "gau")
-			}
-			for _, u := range urls {
-				pool[u] = struct{}{}
-			}
-		}
+		// Catatan:
+		// gau hanya boleh dijalankan dalam konteks pipeline agresif (-fa) setelah httpx dari subfinder.
+		// Pemanggilan runURLCollector("gau", ...) di sini di-nonaktifkan agar gau tidak berjalan
+		// pada mode default / -F.
+		//
+		// if useExternal && binaryExists("gau") {
+		// 	urls, used := runURLCollector("gau", t, verbose)
+		// 	if used {
+		// 		ctx.ExternalUsed = append(ctx.ExternalUsed, "gau")
+		// 	}
+		// 	for _, u := range urls {
+		// 		pool[u] = struct{}{}
+		// 	}
+		// }
 	}
 
 	for u := range pool {
@@ -381,10 +387,10 @@ func normalizeDomainForExternal(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
-// runSubfinder menjalankan subfinder -d domain.
-// Perilaku:
-// - Mengumpulkan subdomain dari subfinder (verbose: output penuh, non-verbose: -silent).
-// - Lalu, jika httpx tersedia, mem-filter hasil melalui httpx dengan -mc 200 (hanya host HTTP 200).
+// runSubfinder menjalankan subfinder -d domain dan mengembalikan daftar subdomain mentah.
+// Catatan:
+// - Fungsi ini tidak lagi meng-chain httpx; dipakai untuk mode in-memory fallback.
+// - Untuk pipeline -fa dengan temp-file, gunakan runAggressivePipelineWithTempFiles.
 func runSubfinder(domain string, concurrency int, verbose bool) []string {
 	if !binaryExists("subfinder") {
 		return nil
@@ -392,10 +398,10 @@ func runSubfinder(domain string, concurrency int, verbose bool) []string {
 
 	var args []string
 	if verbose {
-		// Tampilkan output asli subfinder
+		// Verbose: tampilkan output asli subfinder (tanpa -silent)
 		args = []string{"-d", domain}
 	} else {
-		// Mode normal: hanya ambil hasil bersih
+		// Non-verbose: gunakan -silent untuk output bersih
 		args = []string{"-d", domain, "-silent"}
 	}
 	if concurrency > 0 {
@@ -434,8 +440,8 @@ func runSubfinder(domain string, concurrency int, verbose bool) []string {
 		go func() {
 			sc := bufio.NewScanner(stderr)
 			for sc.Scan() {
-				line := sc.Text()
-				if strings.TrimSpace(line) != "" {
+				line := strings.TrimSpace(sc.Text())
+				if line != "" {
 					fmt.Println(line)
 				}
 			}
@@ -450,11 +456,8 @@ func runSubfinder(domain string, concurrency int, verbose bool) []string {
 			continue
 		}
 		if verbose {
-			// subfinder full output sudah termasuk banner/log/result,
-			// jadi langsung tampilkan apa adanya.
 			fmt.Println(line)
 		}
-		// tetap kumpulkan sebagai subdomain candidate
 		subs = append(subs, line)
 	}
 
@@ -464,24 +467,13 @@ func runSubfinder(domain string, concurrency int, verbose bool) []string {
 		fmt.Printf("[subfinder] %d subdomains found\n", len(subs))
 	}
 
-	// Setelah mendapatkan subdomains, jika httpx tersedia, filter dengan -mc 200
-	if len(subs) == 0 || !binaryExists("httpx") {
-		return subs
-	}
-
-	filtered := runHttpxOnList(subs, concurrency, verbose)
-	if !verbose && len(filtered) > 0 {
-		fmt.Printf("[subfinder] %d subdomains with HTTP 200\n", len(filtered))
-	}
-	return filtered
+	return subs
 }
 
 // runHttpxOnList menjalankan httpx pada list host/URL dan mengembalikan hasil dengan status 200 saja.
-// - Selalu menggunakan -mc 200 untuk memastikan konsistensi filtering.
-// runHttpxOnList menjalankan httpx pada list host/URL dan mengembalikan hasil dengan status 200 saja.
-// - Selalu menggunakan -mc 200 (baik verbose maupun non-verbose) untuk konsistensi.
-// - Jika verbose: tampilkan output asli httpx (tanpa -silent).
-// - Jika tidak: gunakan -silent dan hanya parsing hasil.
+// - Selalu menggunakan -mc 200.
+// - Jika verbose (autohunt -v): tanpa -silent, tampilkan output asli.
+// - Jika non-verbose: gunakan -silent dan hanya cetak ringkasan.
 func runHttpxOnList(list []string, concurrency int, verbose bool) []string {
 	if !binaryExists("httpx") || len(list) == 0 {
 		return list
@@ -489,10 +481,8 @@ func runHttpxOnList(list []string, concurrency int, verbose bool) []string {
 
 	var args []string
 	if verbose {
-		// Live output: jangan pakai -silent, gunakan -status-code dan -mc 200
 		args = []string{"-status-code", "-follow-redirects", "-mc", "200"}
 	} else {
-		// Non-verbose: tetap sunyi, gunakan -silent dan -mc 200
 		args = []string{"-silent", "-status-code", "-follow-redirects", "-mc", "200"}
 	}
 	if concurrency > 0 {
@@ -640,9 +630,7 @@ func runGauOnList(list []string, concurrency int, verbose bool) []string {
 }
 
 // runHttpxOnListWithMC menjalankan httpx dengan -mc filter untuk URL final.
-// - Diubah untuk konsisten hanya menerima status 200 (sesuai requirement).
-// - Jika verbose: tampilkan output asli httpx (tanpa -silent).
-// - Jika tidak: gunakan -silent dan hanya parsing hasil.
+// Digunakan oleh pipeline agresif eksternal.
 func runHttpxOnListWithMC(list []string, concurrency int, verbose bool) []string {
 	if !binaryExists("httpx") || len(list) == 0 {
 		return list
@@ -718,4 +706,177 @@ func runHttpxOnListWithMC(list []string, concurrency int, verbose bool) []string
 		fmt.Printf("[httpx] %d URLs after mc filter\n", len(clean))
 	}
 	return clean
+}
+
+// aggressivePipelineCounts menyimpan metrik ringkas untuk pipeline -fa.
+type aggressivePipelineCounts struct {
+	subs   int
+	httpx1 int
+	gau    int
+	httpx2 int
+}
+
+// runAggressivePipelineWithTempFiles menjalankan rantai agresif:
+// subfinder -> httpx -> gau -> httpx menggunakan file sementara.
+// - Menghormati verbose:
+//   - verbose=true  : tools tanpa -silent, output live.
+//   - verbose=false : tools dengan -silent (jika mendukung), hanya ringkasan.
+//
+// - Mengembalikan daftar URL final (mc 200) + metrik per tahap.
+func runAggressivePipelineWithTempFiles(domain string, concurrency int, verbose bool) ([]string, aggressivePipelineCounts, error) {
+	counts := aggressivePipelineCounts{}
+
+	// Buat direktori temp khusus pipeline ini
+	tmpDir, err := os.MkdirTemp("", "autohunt-fa-*")
+	if err != nil {
+		return nil, counts, fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	// Pastikan dibersihkan setelah selesai
+	defer os.RemoveAll(tmpDir)
+
+	subsPath := filepath.Join(tmpDir, "subs.txt")
+	httpxSubsPath := filepath.Join(tmpDir, "httpx.txt")
+	gauPath := filepath.Join(tmpDir, "gau.txt")
+	cleanPath := filepath.Join(tmpDir, "clean.txt")
+
+	// 1) subfinder -d domain -t <c> [-silent] -o subs.txt
+	{
+		args := []string{"-d", domain, "-t", fmt.Sprintf("%d", concurrency), "-o", subsPath}
+		if !verbose {
+			args = append(args, "-silent")
+		}
+		if verbose {
+			fmt.Printf("[fa] Running: subfinder %s\n", strings.Join(args, " "))
+		}
+		cmd := exec.Command("subfinder", args...)
+		out, err := cmd.CombinedOutput()
+		if verbose && len(out) > 0 {
+			fmt.Print(string(out))
+		}
+		if err != nil {
+			return nil, counts, fmt.Errorf("subfinder failed: %w", err)
+		}
+		data, _ := os.ReadFile(subsPath)
+		if len(data) == 0 {
+			return nil, counts, fmt.Errorf("subfinder produced no results")
+		}
+		counts.subs = len(strings.Split(strings.TrimSpace(string(data)), "\n"))
+		if !verbose {
+			fmt.Printf("[fa] subfinder: %d subdomains\n", counts.subs)
+		}
+	}
+
+	// 2) httpx -l subs.txt -mc 200 -t <c> [-silent] -o httpx.txt
+	{
+		args := []string{"-l", subsPath, "-mc", "200", "-t", fmt.Sprintf("%d", concurrency), "-o", httpxSubsPath}
+		if !verbose {
+			args = append(args, "-silent")
+		}
+		if verbose {
+			fmt.Printf("[fa] Running: httpx %s\n", strings.Join(args, " "))
+		}
+		cmd := exec.Command("httpx", args...)
+		out, err := cmd.CombinedOutput()
+		if verbose && len(out) > 0 {
+			fmt.Print(string(out))
+		}
+		if err != nil {
+			return nil, counts, fmt.Errorf("httpx(subs) failed: %w", err)
+		}
+		data, _ := os.ReadFile(httpxSubsPath)
+		if len(data) == 0 {
+			return nil, counts, fmt.Errorf("httpx(subs) produced no results")
+		}
+		counts.httpx1 = len(strings.Split(strings.TrimSpace(string(data)), "\n"))
+		if !verbose {
+			fmt.Printf("[fa] httpx(subs): %d live hosts (mc=200)\n", counts.httpx1)
+		}
+	}
+
+	// 3) cat httpx.txt | gau --threads <c> > gau.txt
+	{
+		httpxData, err := os.ReadFile(httpxSubsPath)
+		if err != nil {
+			return nil, counts, fmt.Errorf("read httpx(subs) failed: %w", err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(httpxData)), "\n")
+		gauFile, err := os.Create(gauPath)
+		if err != nil {
+			return nil, counts, fmt.Errorf("create gau.txt failed: %w", err)
+		}
+		defer gauFile.Close()
+
+		if verbose {
+			fmt.Printf("[fa] Running: gau --threads=%d (piped from httpx(subs))\n", concurrency)
+		}
+
+		for _, host := range lines {
+			host = strings.TrimSpace(host)
+			if host == "" {
+				continue
+			}
+			args := []string{fmt.Sprintf("--threads=%d", concurrency), host}
+			cmd := exec.Command("gau", args...)
+			out, err := cmd.Output()
+			if verbose && len(out) > 0 {
+				for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+					if l != "" {
+						fmt.Printf("[gau] %s\n", l)
+					}
+				}
+			}
+			if err != nil {
+				if verbose {
+					fmt.Printf("[fa] gau failed for %s: %v\n", host, err)
+				}
+				continue
+			}
+			if len(out) > 0 {
+				if _, werr := gauFile.Write(out); werr != nil {
+					return nil, counts, fmt.Errorf("write gau.txt failed: %w", werr)
+				}
+				if !strings.HasSuffix(string(out), "\n") {
+					_, _ = gauFile.WriteString("\n")
+				}
+			}
+		}
+
+		gauData, _ := os.ReadFile(gauPath)
+		if len(gauData) == 0 {
+			return nil, counts, fmt.Errorf("gau produced no URLs")
+		}
+		counts.gau = len(strings.Split(strings.TrimSpace(string(gauData)), "\n"))
+		if !verbose {
+			fmt.Printf("[fa] gau: %d URLs\n", counts.gau)
+		}
+	}
+
+	// 4) httpx -l gau.txt -mc 200 -t <c> [-silent] -o clean.txt
+	{
+		args := []string{"-l", gauPath, "-mc", "200", "-t", fmt.Sprintf("%d", concurrency), "-o", cleanPath}
+		if !verbose {
+			args = append(args, "-silent")
+		}
+		if verbose {
+			fmt.Printf("[fa] Running: httpx %s\n", strings.Join(args, " "))
+		}
+		cmd := exec.Command("httpx", args...)
+		out, err := cmd.CombinedOutput()
+		if verbose && len(out) > 0 {
+			fmt.Print(string(out))
+		}
+		if err != nil {
+			return nil, counts, fmt.Errorf("httpx(gau) failed: %w", err)
+		}
+		cleanData, _ := os.ReadFile(cleanPath)
+		if len(cleanData) == 0 {
+			return nil, counts, fmt.Errorf("httpx(gau) produced no clean URLs")
+		}
+		lines := strings.Split(strings.TrimSpace(string(cleanData)), "\n")
+		counts.httpx2 = len(lines)
+		if !verbose {
+			fmt.Printf("[fa] httpx(clean): %d URLs (mc=200)\n", counts.httpx2)
+		}
+		return lines, counts, nil
+	}
 }

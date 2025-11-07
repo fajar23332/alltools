@@ -33,7 +33,7 @@ func main() {
 	timeout := flag.Int("timeout", 900, "Max scan time in seconds (global)")
 	concurrency := flag.Int("c", 10, "Maximum concurrent HTTP operations (tuning: 5-50)")
 	verbose := flag.Bool("v", false, "Verbose output")
-	fuzzing := flag.Bool("fuzzing", false, "Run ffuf-based fuzzing mode (standalone if used without fullpower flags)")
+	fuzzing := flag.Bool("fuzzing", false, "Run ffuf-based fuzzing after vulnerability scanning (requires ffuf in PATH and FUZZ URL)")
 	tagsFilter := flag.String("tags", "", "Comma-separated tags to filter findings in the final report (e.g. xss,sqli,lfi,sensitive(ffuf))")
 
 	// Full-power modes:
@@ -41,8 +41,8 @@ func main() {
 	// --fullpower-aggressive / -fa :
 	//   mode sangat agresif (disarankan hanya di VPS / environment kuat),
 	//   meningkatkan intensitas dan cakupan scan sehingga lebih mendekati coverage maksimum.
-	fullpower := flag.Bool("fullpower", false, "Enable full-power mode: orchestrated recon + external tools + targeted vuln scanning")
-	flag.BoolVar(fullpower, "F", false, "Alias for --fullpower")
+	fullpower := flag.Bool("fullpower", true, "Enable full-power mode: orchestrated recon + external tools + targeted vuln scanning")
+	flag.BoolVar(fullpower, "F", true, "Alias for --fullpower")
 
 	fullpowerAggressive := flag.Bool("fullpower-aggressive", false, "EXTREME mode: very aggressive full-power scanning, recommended ONLY on VPS (high load, wide coverage)")
 	flag.BoolVar(fullpowerAggressive, "fa", false, "Alias for --fullpower-aggressive")
@@ -69,36 +69,6 @@ func main() {
 		log.Fatalf("[!] No valid targets loaded")
 	}
 	fmt.Printf("[*] Loaded %d target(s)\n", len(targets))
-
-	// Standalone -fuzzing mode:
-	// Jika user hanya mengaktifkan -fuzzing tanpa fullpower/basic scan khusus lainnya,
-	// jalankan HANYA ffuf berbasis target utama dan keluar setelah selesai.
-	if *fuzzing && !*fullpower && !*fullpowerAggressive && *targetsFile == "" && *target != "" {
-		stageBanner("STANDALONE FFUF MODE (-fuzzing)")
-		targetsStandalone, err := core.LoadTargets(*target, "")
-		if err != nil || len(targetsStandalone) == 0 {
-			log.Fatalf("[!] Invalid target for -fuzzing mode")
-		}
-
-		if *concurrency < 1 {
-			*concurrency = 1
-		}
-
-		scanCtxStandalone := &core.ScanContext{
-			Targets: targetsStandalone,
-		}
-
-		ffufFindings, err := modules.RunFFUFFuzzing(scanCtxStandalone, *concurrency, *verbose)
-		if err != nil {
-			fmt.Printf("[!] FFUF fuzzing error: %v\n", err)
-		} else {
-			fmt.Printf("[*] FFUF findings: %d\n", len(ffufFindings))
-			// Standalone mode saat ini hanya menampilkan hasil di terminal.
-			// Integrasi penulisan laporan memakai mekanisme report core yang sudah ada
-			// bisa ditambahkan kemudian tanpa membuat tipe baru yang tidak ada.
-		}
-		return
-	}
 
 	// Stage 2: Recon / FullRecon
 	var scanCtx *core.ScanContext
@@ -255,11 +225,14 @@ func main() {
 	}
 
 	// Optional: FFUF-based fuzzing (separate dari main recon/vuln pipeline)
-	// Mode ini berlaku jika -fuzzing digunakan BERSAMA fullpower/basic scan:
-	// - Full pipeline tetap dijalankan (subfinder/httpx/gau/internal dll).
-	// - Setelah itu, ffuf dijalankan sekali terhadap target utama.
+	// Hanya dijalankan jika user menambahkan --fuzzing.
+	// Perilaku:
+	// - Menggunakan ffuf (jika tersedia di PATH)
+	// - Target URL otomatis dipastikan mengandung FUZZ (append /FUZZ jika belum ada)
+	// - Menggunakan wordlists/dirs_common.txt sebagai wordlist utama
+	// - Menambah temuan ke allFindings sebagai Module="FFUF" dengan tag "sensitive(ffuf)"
 	if *fuzzing {
-		stageBanner("STAGE 4: FFUF FUZZING (-fuzzing)")
+		stageBanner("STAGE 4: FFUF FUZZING (--fuzzing)")
 		ffufFindings, err := modules.RunFFUFFuzzing(scanCtx, *concurrency, *verbose)
 		if err != nil {
 			fmt.Printf("[!] FFUF fuzzing error: %v\n", err)
@@ -267,34 +240,6 @@ func main() {
 			fmt.Printf("[*] FFUF findings: %d\n", len(ffufFindings))
 			allFindings = append(allFindings, ffufFindings...)
 		}
-	}
-
-	// Optional: filter findings by tags if --tags is provided
-	if *tagsFilter != "" {
-		stageBanner("STAGE 5: TAG FILTER")
-		requested := parseTagsFilter(*tagsFilter)
-		var filtered []core.Finding
-		for _, f := range allFindings {
-			if hasMatchingTag(f.Tags, requested) {
-				filtered = append(filtered, f)
-			}
-		}
-		fmt.Printf("[*] Tag filter active: %v -> %d/%d findings kept\n", requested, len(filtered), len(allFindings))
-		allFindings = filtered
-	}
-
-	// Optional: filter findings by tags if --tags is provided
-	if *tagsFilter != "" {
-		stageBanner("STAGE 5: TAG FILTER")
-		requested := parseTagsFilter(*tagsFilter)
-		var filtered []core.Finding
-		for _, f := range allFindings {
-			if hasMatchingTag(f.Tags, requested) {
-				filtered = append(filtered, f)
-			}
-		}
-		fmt.Printf("[*] Tag filter active: %v -> %d/%d findings kept\n", requested, len(filtered), len(allFindings))
-		allFindings = filtered
 	}
 
 	// Optional: filter findings by tags if --tags is provided
